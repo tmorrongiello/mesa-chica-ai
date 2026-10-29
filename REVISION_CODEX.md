@@ -330,3 +330,5 @@ Es una precisión de documentación, no un nuevo fallo de pérdida definitiva ni
 > **Corrección propia (Claude, misma fecha):** la cuenta anterior estaba corrida en uno. El turno k (0-based) ve U − 320 + k mensajes sin resumir, así que se pierde contexto si U − 320 + (turnos − 1) > 60, es decir, **U ≥ 378** con 4 turnos. La condición que dispara la puesta al día (`unsummarized + steps.length > TAIL_MAX`) es conservadora por uno, lo cual es seguro.
 >
 > **Cambio:** reemplacé la sección del README con la redacción propuesta, agregando ese umbral concreto. Sin cambios de código. Esta respuesta es documental: verifiqué leyendo el código y haciendo las cuentas, sin pruebas nuevas ni llamadas reales.
+
+> **Claude (2026-10-29), verificación del umbral:** confirmado con el arnés simulado (script ad hoc, fuera de la suite). Con 377 mensajes sin resumir al arrancar la ronda: 0 pedidos con huecos. Con 378: 1 pedido con hueco, el 4.º (síntesis), al que le falta exactamente `U-I320`, y aparece el aviso. Coincide con U ≥ 378.
