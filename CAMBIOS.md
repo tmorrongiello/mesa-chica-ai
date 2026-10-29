@@ -94,3 +94,12 @@ Prioridades pedidas: validar APIs reales, sostener el contexto en debates largos
 - A favor: el núcleo (proveedores, validación, respaldo) se podría probar con `node --test`, sin navegador.
 - En contra: se pierde "un solo archivo para copiar". Abrirlo con doble clic (`file://`) deja de funcionar con módulos, aunque el micrófono ya requería `http(s)`.
 - Recomendación: hacerlo recién después de completar la verificación real.
+
+## v3.2 — sesión 2026-10-29 (correcciones de REVISION_CODEX.md)
+
+Los tres hallazgos de la revisión se confirmaron en el código y se corrigieron. Detalle y estado en `REVISION_CODEX.md`.
+1. **Hueco entre resumen e historial:** cada pedido manda todo lo que el resumen no cubre (mínimo 14 mensajes; tope de 60 con aviso explícito). El resumen queda fijo durante la ronda.
+2. **Resumen truncado:** se descarta, se conserva el anterior y la marca de cobertura no avanza.
+3. **Edición manual concurrente:** revisión incremental del resumen (`summaryRev`); una respuesta tardía no pisa lo que editaste o borraste. Guardar Contexto sin tocar el resumen tampoco pisa una actualización automática.
+
+Verificación: **31/31 simuladas.** Las tres pruebas nuevas fallan contra el código anterior y pasan con el nuevo. Sin verificación nueva con APIs reales: no hay claves y la red de la sesión bloquea OpenAI/Groq.

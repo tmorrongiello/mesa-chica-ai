@@ -23,7 +23,11 @@ Los tres hallazgos siguientes se reprodujeron ejecutando las funciones relevante
 
 ## 1. Hay un hueco entre el resumen y el historial reciente
 
-**Estado: pendiente. Prioridad: alta para la continuidad del debate.**
+**Estado: corregido (Claude, 2026-10-29). Prioridad: alta para la continuidad del debate.**
+
+> **Resolución.** Confirmado en el código. Nueva función `recentWindow()`: cada pedido manda **todos los mensajes que el resumen todavía no cubre** (posteriores a `summaryUpto`), aunque sean más de 14, y nunca menos que los últimos 14. El resumen y su marca quedan fijos durante la ronda (instantánea), y la cola no resumida viaja completa, sin llamadas extra por turno. Si la actualización del resumen falla o se cancela, la cola sigue creciendo y se manda entera. Tope duro: 60 mensajes (`TAIL_MAX`); si se supera, la sala muestra un aviso y el pedido lo dice explícitamente ("ATENCIÓN: N mensajes viejos sin resumir no entran"), no se excluye en silencio.
+>
+> **Prueba:** `memoria [Codex 1]` en `pruebas/simulado.js`. Cada mensaje lleva una marca única y el resumidor simulado devuelve las marcas que recibió. En **cada pedido de turno** se verifica que todas las marcas producidas hasta ese momento estén en el pedido (historial o resumen). Se corre en tres variantes de 7 rondas: normal, resumen que falla dos veces, y "Frenar" durante la actualización del resumen. Contra el código anterior falla (`pedido #14 (claude) sin: A-claude2`); con la corrección pasa.
 
 Referencias:
 - [transcriptText: recorte a los últimos 14 mensajes](https://github.com/tmorrongiello/mesa-chica-ai/blob/034e732e935463979969dd642d62df9c29c209db/index.html#L1709)
@@ -52,7 +56,11 @@ Verificar la cobertura **en cada pedido**, no solo al finalizar seis rondas. Int
 
 ## 2. Un resumen truncado reemplaza al válido y avanza la marca de cobertura
 
-**Estado: pendiente. Prioridad: alta para la integridad de la memoria.**
+**Estado: corregido (Claude, 2026-10-29). Prioridad: alta para la integridad de la memoria.**
+
+> **Resolución.** Confirmado. `updateSummary()` ahora descarta el resultado si `r.truncated` o si supera `LIMITS.summary` (ya no se recorta localmente para guardarlo como íntegro). En ese caso conserva `summary` y `summaryUpto`, muestra un aviso ("El resumen acumulado volvió TRUNCADO…") y los mensajes pendientes siguen viajando completos (punto 1). El reintento es automático en la próxima ronda, con los mismos pendientes; el aviso sugiere subir el máximo de tokens si se repite. No se reduce el lote automáticamente.
+>
+> **Prueba:** `memoria [Codex 2]`. El primer resumen vuelve con texto y `stop_reason: max_tokens`. Se verifica que `summary`, `summaryUpto` y la revisión no cambian, que aparece el aviso, que no hay huecos en la ronda siguiente y que el siguiente resumen incluye el mensaje pendiente (`U-00`). Contra el código anterior falla (guardaba `"RESUMEN CORTADO"` y avanzaba la marca).
 
 Referencia: [guardado del resultado de updateSummary](https://github.com/tmorrongiello/mesa-chica-ai/blob/034e732e935463979969dd642d62df9c29c209db/index.html#L1755).
 
@@ -76,7 +84,11 @@ Devolver un resumen con texto y `truncated: true`. Comprobar que ni `summary` ni
 
 ## 3. Una respuesta tardía puede sobrescribir una edición manual del resumen
 
-**Estado: pendiente. Prioridad: media.**
+**Estado: corregido (Claude, 2026-10-29). Prioridad: media.**
+
+> **Resolución.** Confirmado. Cada sala tiene `summaryRev`, una revisión incremental. Se incrementa en cada edición manual, en cada guardado automático y al limpiar el historial. `updateSummary()` la captura al iniciar el pedido; si cambió al llegar la respuesta, descarta la automática, conserva la versión del usuario, no avanza `summaryUpto` y avisa. La edición manual solo cuenta si el campo cambió respecto de cuando se abrió el diálogo. Así, guardar Contexto por otro motivo con el diálogo abierto no pisa una actualización automática que haya llegado mientras tanto (el caso inverso). Borrar el resumen a mano también reinicia `summaryUpto`, como antes.
+>
+> **Prueba:** `memoria [Codex 3]`. La respuesta del resumidor se retiene 2 s y, mientras tanto, se edita y guarda desde el diálogo, en tres variantes: editar, borrar, y guardar cambiando solo las decisiones. Se verifica la edición conservada y la marca sin avanzar (o el resumen automático conservado en "no tocar"), el aviso, y que la ronda siguiente no tiene huecos y rearma el resumen. Contra el código anterior falla (la respuesta tardía pisaba `EDICION-MANUAL B`).
 
 Referencias:
 - [Lectura del resumen para el pedido y guardado de la respuesta](https://github.com/tmorrongiello/mesa-chica-ai/blob/034e732e935463979969dd642d62df9c29c209db/index.html#L1753)
@@ -101,6 +113,8 @@ Retener la respuesta simulada, editar y guardar el resumen desde el diálogo, y 
 
 ## Validación con proveedores reales: sigue pendiente
 
+> **Estado (Claude, 2026-10-29): sin cambios, bloqueado.** Esta sesión no tiene credenciales, y la red del entorno de desarrollo bloquea `api.openai.com` y `api.groq.com`. No se hizo ninguna llamada real nueva. Lo único verificado contra APIs reales sigue siendo lo del README (CORS y respuestas de error sin clave de Anthropic y Gemini). Los puntos de abajo siguen pendientes.
+
 El README distingue correctamente las pruebas simuladas de los controles reales sin claves. Los controles de CORS y errores documentados no demuestran una ronda ni una transcripción exitosas.
 
 Queda pendiente verificar con credenciales autorizadas:
@@ -114,10 +128,10 @@ No guardar credenciales en este archivo, el repositorio o las pruebas. Si no hay
 
 ## Criterio de cierre
 
-- [ ] Cada prompt mantiene cobertura del historial sin huecos entre resumen y mensajes recientes.
-- [ ] Los resúmenes truncados no reemplazan al anterior ni avanzan la cobertura.
-- [ ] Las actualizaciones automáticas respetan las ediciones manuales concurrentes.
-- [ ] Hay pruebas de regresión para los tres casos y la suite completa pasa.
-- [ ] Se informa por separado qué se verificó con simulación y qué con APIs reales.
+- [x] Cada prompt mantiene cobertura del historial sin huecos entre resumen y mensajes recientes. *(simulado; tope explícito de 60 mensajes no resumidos con aviso)*
+- [x] Los resúmenes truncados no reemplazan al anterior ni avanzan la cobertura. *(simulado)*
+- [x] Las actualizaciones automáticas respetan las ediciones manuales concurrentes. *(simulado)*
+- [x] Hay pruebas de regresión para los tres casos y la suite completa pasa: **31/31** local (`npm test`). Las tres nuevas fallan contra el código anterior (`034e732`) y pasan con la corrección.
+- [x] Se informa por separado qué se verificó con simulación y qué con APIs reales: todo lo de esta revisión es **simulado**; con APIs reales no hubo verificación nueva (ver arriba).
 
 La modularización puede seguir esperando hasta resolver la continuidad de la memoria y completar la validación real.

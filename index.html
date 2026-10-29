@@ -350,7 +350,7 @@
   <footer class="composer">
     <div class="composer-inner">
       <div class="composer-meta">
-        <span id="sendInfo">Cada turno envía: objetivo + contexto + decisiones + resumen + últimos 14 mensajes.</span>
+        <span id="sendInfo">Cada turno envía: objetivo + contexto + decisiones + resumen + mensajes recientes.</span>
         <div class="meta-actions">
           <button id="btnSynth" class="link-btn violet" type="button">Sintetizar</button>
           <button id="btnMore" class="link-btn sky" type="button">+1 ronda</button>
@@ -435,7 +435,7 @@
           <input type="text" id="ctxGlossary" autocomplete="off" placeholder="Ej.: Krillion, Oberman, Next.js, Railway…">
           <p class="hint">Nombres y jerga que el transcriptor debería escribir bien. En Groq/OpenAI el texto de ayuda se recorta (Groq admite ~224 tokens).</p>
         </div>
-        <p class="note">Cada turno envía al proveedor: objetivo + contexto + decisiones vigentes + resumen acumulado + los últimos 14 mensajes. Cuando la charla es larga, al final de la ronda se hace una llamada extra para actualizar el resumen. Los cambios aplican a la próxima ronda.</p>
+        <p class="note">Cada turno envía al proveedor: objetivo + contexto + decisiones vigentes + resumen acumulado + todos los mensajes que el resumen todavía no cubre (como mínimo, los últimos 14). Cuando la charla es larga, al final de la ronda se hace una llamada extra para actualizar el resumen. Los cambios aplican a la próxima ronda.</p>
       </div>
       <div class="dlg-foot">
         <button id="btnClearHistory" class="btn danger" type="button">Limpiar historial</button>
@@ -970,6 +970,7 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
       draft: str(p.draft, LIMITS.draft),
       summary: str(p.summary, LIMITS.summary),
       summaryUpto: typeof p.summaryUpto === 'string' ? p.summaryUpto.slice(0, 80) : '',
+      summaryRev: clampNum(p.summaryRev, 0, 1e9, 0),
       messages: []
     };
     if (!out.id) { out.id = newId('proj'); info.issues.push(`Sala "${out.name}" sin id: le asigné uno nuevo.`); }
@@ -1706,9 +1707,25 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
       ? `${s.role.toUpperCase()} (rol emulado por ${m.provider ? PROVIDER_LABEL[m.provider] : 'otro modelo'})`
       : `${s.name.toUpperCase()} – ${s.role}`;
   }
-  function transcriptText(history) {
-    const last = history.slice(-HISTORY_LIMIT);
-    return last.length ? last.map(m => `[${speakerLabel(m)}]: ${m.text}`).join('\n\n') : '(todavía no hay mensajes)';
+  const TAIL_MAX = 60;
+
+  /* Mensajes que se mandan como historial: todos los que el resumen todavía no cubre
+     (aunque sean más de 14) y nunca menos que los últimos 14. Así no hay hueco entre
+     resumen e historial, ni durante la ronda ni si la actualización del resumen falló.
+     Tope duro TAIL_MAX: si se supera, se avisa (no se excluye en silencio). */
+  function recentWindow(history, summaryUpto) {
+    const idx = summaryUpto ? history.findIndex(m => m.id === summaryUpto) : -1;
+    const unsummarized = history.slice(idx + 1);
+    const base = unsummarized.length > HISTORY_LIMIT ? unsummarized : history.slice(-HISTORY_LIMIT);
+    return { msgs: base.slice(-TAIL_MAX), dropped: Math.max(0, base.length - TAIL_MAX) };
+  }
+
+  function transcriptText(win) {
+    const head = win.dropped
+      ? `HISTORIAL RECIENTE (${win.msgs.length} mensajes; ATENCIÓN: ${win.dropped} mensajes viejos sin resumir no entran en este pedido):`
+      : `HISTORIAL RECIENTE (${win.msgs.length} mensajes; lo anterior está en el resumen acumulado):`;
+    const body = win.msgs.length ? win.msgs.map(m => `[${speakerLabel(m)}]: ${m.text}`).join('\n\n') : '(todavía no hay mensajes)';
+    return `${head}\n${body}`;
   }
   // Objetivo y decisiones son del usuario; el resumen acumulado lo escribe la IA y no son decisiones.
   function roomBlock(room) {
@@ -1750,14 +1767,25 @@ No inventes decisiones: solo el usuario decide y sus decisiones se guardan apart
     op.activeSeat = null;
     if (App.currentId === projectId) renderBadges();
     setOpStatus(op, 'Actualizando resumen acumulado…');
+    const startRev = p.summaryRev || 0; // para detectar ediciones manuales mientras espera al proveedor
     const { system, user } = summaryPrompt(p.objective || '', p.summary || '', fresh);
     try {
       const r = await callWithFallback({ native, snap, system, user, signal: op.ctrl.signal });
       if (!isLive(op)) return;
       const target = getProject(projectId);
       if (!target) return;
-      target.summary = r.text.slice(0, LIMITS.summary);
+      // Un resumen cortado no reemplaza al anterior ni marca mensajes como resumidos.
+      if (r.truncated || r.text.length > LIMITS.summary) {
+        appendMessage(projectId, { role: 'system_notice', level: 'warn', text: 'El resumen acumulado volvió TRUNCADO: conservé el anterior y los mensajes pendientes siguen viajando completos. Se reintenta en la próxima ronda; si se repite, subí el máximo de tokens en Ajustes.' });
+        return;
+      }
+      if ((target.summaryRev || 0) !== startRev) {
+        appendMessage(projectId, { role: 'system_notice', level: 'warn', text: 'Editaste el resumen acumulado mientras se actualizaba: conservé tu versión y descarté la automática. Lo pendiente se incorpora en la próxima ronda.' });
+        return;
+      }
+      target.summary = r.text;
       target.summaryUpto = fresh[fresh.length - 1].id;
+      target.summaryRev = startRev + 1;
       persistNow();
       if (skipped) appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `El resumen acumulado arrancó con los últimos ${SUMMARY_MAX_BATCH} mensajes viejos; ${skipped} anteriores quedaron afuera.` });
     } catch (e) {
@@ -1766,7 +1794,7 @@ No inventes decisiones: solo el usuario decide y sus decisiones se guardan apart
     }
   }
 
-  function seatPrompt(seat, room, history, closeRound) {
+  function seatPrompt(seat, room, win, closeRound) {
     const others = SEATS.filter(s => s !== seat).map(s => s.role).join(' y ');
     const system = `${seat.rolePrompt}
 Participás en una mesa de debate por turnos con otros dos roles (${others}) y el usuario, que es quien decide. Hablás en español rioplatense, natural y directo.
@@ -1782,11 +1810,11 @@ REGLAS:
 6. Hacé una pregunta al usuario solo si hay una decisión real que tenga que tomar; si no, no cierres con pregunta.
 7. No empieces con tu nombre: la interfaz ya lo muestra.${closeRound ? `
 8. Sos el último turno y no hay síntesis: cerrá con **Propuesta:** (1-2 líneas), **Desacuerdos:** (los que quedan abiertos, o "ninguno") y **Próximo paso:** (una acción concreta).` : ''}`;
-    const user = `HISTORIAL RECIENTE DE LA SALA (últimos ${HISTORY_LIMIT} mensajes):\n${transcriptText(history)}\n\n---\nEs tu turno (${seat.role}).`;
+    const user = `${transcriptText(win)}\n\n---\nEs tu turno (${seat.role}).`;
     return { system, user };
   }
 
-  function synthPrompt(room, history) {
+  function synthPrompt(room, win) {
     const system = `Sos el MODERADOR NEUTRAL de una mesa de debate entre tres roles (${SEATS.map(s => s.role).join(', ')}) y el usuario. No aportás ideas nuevas ni tomás partido. Español rioplatense, claro y al grano. No podés verificar fuentes: si algo depende de datos externos, marcalo "(a verificar)".
 
 ${roomBlock(room)}
@@ -1796,7 +1824,7 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
 **Desacuerdo clave:** (uno solo y de qué dato o decisión depende resolverlo; "ninguno" si no hay)
 **Decisión recomendada:** (1 línea; es una sugerencia, el usuario decide si la pasa a sus decisiones vigentes)
 **Próximo paso:** (1 acción concreta que el usuario pueda hacer hoy)`;
-    const user = `HISTORIAL RECIENTE DE LA SALA (últimos ${HISTORY_LIMIT} mensajes):\n${transcriptText(history)}\n\n---\nEscribí la síntesis.`;
+    const user = `${transcriptText(win)}\n\n---\nEscribí la síntesis.`;
     return { system, user };
   }
 
@@ -1836,7 +1864,8 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
 
     // Foto de todo al arrancar: sala, contexto, decisiones, historial, claves y configuración.
     const snap = { keys: Keys.snapshot(), cfg: structuredClone(App.config) };
-    const room = { objective: p.objective || '', context: p.context || '', decisions: p.decisions || '', summary: p.summary || '' };
+    // El resumen y su marca de cobertura quedan fijos durante la ronda; el historial no resumido viaja completo.
+    const room = { objective: p.objective || '', context: p.context || '', decisions: p.decisions || '', summary: p.summary || '', summaryUpto: p.summaryUpto || '' };
     const history = p.messages.filter(m => m.role === 'user' || m.role === 'agent').map(m => ({ ...m }));
     const order = kind === 'round' ? roundOrder(p, snap.cfg) : [];
     const synth = kind === 'synth' || snap.cfg.synthesis;
@@ -1863,7 +1892,12 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
           appendMessage(projectId, { role: 'system_notice', level: 'error', text: `⚠️ ${label}: no hay ninguna clave cargada.` });
           break;
         }
-        const { system, user } = step.synth ? synthPrompt(room, history) : seatPrompt(step.seat, room, history, step.closeRound);
+        const win = recentWindow(history, room.summaryUpto);
+        if (win.dropped && !op.warnedDropped) {
+          op.warnedDropped = true;
+          appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `Hay ${win.dropped + win.msgs.length} mensajes sin resumir y solo entran los últimos ${TAIL_MAX}: ${win.dropped} quedan afuera de este pedido hasta que el resumen se actualice.` });
+        }
+        const { system, user } = step.synth ? synthPrompt(room, win) : seatPrompt(step.seat, room, win, step.closeRound);
         setOpStatus(op, `${i + 1}/${steps.length} · ${label} pensando…`);
         try {
           const r = await callWithFallback({
@@ -2238,6 +2272,7 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     $('ctxName').value = p.name;
     $('ctxObjective').value = p.objective || '';
     $('ctxSummary').value = p.summary || '';
+    d._summaryAtOpen = p.summary || '';
     $('ctxContext').value = p.context || '';
     $('ctxDecisions').value = p.decisions || '';
     $('ctxGlossary').value = p.glossary || '';
@@ -2251,9 +2286,14 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     p.name = $('ctxName').value.trim().slice(0, LIMITS.name) || p.name;
     p.objective = $('ctxObjective').value.slice(0, LIMITS.objective);
     p.context = $('ctxContext').value.slice(0, LIMITS.context);
+    // El resumen solo se toca si lo editaste en este diálogo: así no pisás una actualización automática
+    // que haya llegado mientras estaba abierto, y una edición tuya invalida la automática en curso.
     const newSummary = $('ctxSummary').value.slice(0, LIMITS.summary);
-    if (!newSummary.trim()) p.summaryUpto = ''; // borrado a mano: se rearma desde cero
-    p.summary = newSummary;
+    if (newSummary !== d._summaryAtOpen) {
+      if (!newSummary.trim()) p.summaryUpto = ''; // borrado a mano: se rearma desde cero
+      p.summary = newSummary;
+      p.summaryRev = (p.summaryRev || 0) + 1;
+    }
     p.decisions = $('ctxDecisions').value.slice(0, LIMITS.decisions);
     p.glossary = $('ctxGlossary').value.trim().slice(0, LIMITS.glossary);
     persistNow();
@@ -2272,6 +2312,7 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     p.roundIndex = 0;
     p.summary = '';
     p.summaryUpto = '';
+    p.summaryRev = (p.summaryRev || 0) + 1;
     persistNow();
     if (p.id === App.currentId) renderRoom();
     closeDialog(d);

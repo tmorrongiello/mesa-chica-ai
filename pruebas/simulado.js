@@ -61,6 +61,43 @@ async function mock(page, handlers = {}) {
   return log;
 }
 
+
+/* ---------- Arnés de memoria: cada mensaje lleva una marca única (U-xx / A-provN).
+   Para cada pedido de turno se comprueba que TODAS las marcas producidas hasta ese momento
+   estén en el pedido, ya sea en el historial o dentro del resumen acumulado enviado.
+   El resumidor simulado devuelve las marcas que recibió, así "resumir" conserva la información. */
+function memoryHarness({ failSummary = () => false, delaySummary = () => 0, truncSummary = () => false } = {}) {
+  const st = { produced: [], violations: [], summaries: 0, chatCalls: 0 };
+  const isSummary = e => e.body.includes('RESUMEN ACUMULADO de una mesa');
+  const chat = prov => e => {
+    if (isSummary(e)) {
+      const k = st.summaries++;
+      if (failSummary(k)) return { status: 500, body: { error: { message: 'falla simulada del resumen' } } };
+      const marks = [...new Set(e.body.match(/\b[UA]-[A-Za-z0-9]+\b/g) || [])];
+      if (truncSummary(k)) return { body: { content: [{ type: 'text', text: 'RESUMEN CORTADO' }], stop_reason: 'max_tokens' } };
+      return { delay: delaySummary(k), body: ok[prov](`RESUMEN ${marks.join(' ')}`) };
+    }
+    st.chatCalls++;
+    const missing = st.produced.filter(m => !e.body.includes(m));
+    if (missing.length) st.violations.push(`pedido #${st.chatCalls} (${prov}) sin: ${missing.join(', ')}`);
+    const mark = `A-${prov}${st.produced.length}`;
+    st.produced.push(mark);
+    return { body: ok[prov](`respuesta ${mark}`) };
+  };
+  return { st, handlers: { claude: chat('claude'), openai: chat('openai'), gemini: chat('gemini') } };
+}
+async function userTurn(page, h, i) {
+  const mark = `U-${String(i).padStart(2, '0')}`;
+  h.st.produced.push(mark);
+  await page.fill('#txtInput', `${mark} aclaración del usuario número ${i}`);
+  await page.click('#btnSend');
+}
+async function until(fn, ms = 15000) {
+  const t0 = Date.now();
+  while (!(await fn())) { if (Date.now() - t0 > ms) throw new Error('timeout esperando condición'); await new Promise(r => setTimeout(r, 40)); }
+}
+const roomMem = page => page.evaluate(() => ({ summary: current().summary, upto: current().summaryUpto, rev: current().summaryRev || 0 }));
+
 /* ---------- Mini runner ---------- */
 let browser, browserAudio;
 const results = [];
@@ -615,11 +652,99 @@ async function run() {
     const sys = body.systemInstruction.parts[0].text, usr = body.contents[0].parts[0].text;
     assert(sys.includes('OBJETIVO-ORIGINAL') && sys.includes('RESUMEN-SIM-') && sys.includes('DECISION-USUARIO'), 'prompt con objetivo, resumen y decisiones');
     assert(sys.indexOf('DECISIONES VIGENTES (aprobadas') < sys.indexOf('RESUMEN ACUMULADO'), 'decisiones y resumen en secciones separadas');
-    assert((usr.match(/^\[/gm) || []).length === 14, 'historial reciente = 14 mensajes');
+    assert((usr.match(/^\[/gm) || []).length >= 14, 'historial reciente: al menos 14 mensajes (más si hay sin resumir)');
     assert(!usr.includes('OBJETIVO-ORIGINAL'), 'el pedido original ya no está en la ventana, solo en objetivo/resumen');
     await page.click('#btnContext');
     assert((await page.inputValue('#ctxSummary')).startsWith('RESUMEN-SIM-'), 'resumen visible y editable');
     await ctx.close();
+  });
+
+
+  await test('memoria [Codex 1]: sin hueco entre resumen e historial en CADA pedido (normal, fallo y cancelación del resumen)', async () => {
+    for (const variant of ['normal', 'falla', 'cancela']) {
+      const h = memoryHarness({
+        failSummary: k => variant === 'falla' && k < 2,
+        delaySummary: k => (variant === 'cancela' && k === 0 ? 3000 : 0)
+      });
+      const { ctx, page, go } = await newPage();
+      await go(h.handlers);
+      let cancelled = false;
+      for (let i = 0; i < 7; i++) {
+        await userTurn(page, h, i);
+        if (variant === 'cancela' && !cancelled) {
+          await until(async () => h.st.summaries >= 1 || !(await page.evaluate(() => Boolean(App.debate))));
+          if (h.st.summaries >= 1) { await page.click('#btnStop'); cancelled = true; }
+        }
+        await waitIdle(page);
+      }
+      assert(h.st.violations.length === 0, `${variant}: ${h.st.violations.slice(0, 3).join(' | ')}`);
+      assert(h.st.chatCalls === 28 || variant === 'cancela', `${variant}: pedidos ${h.st.chatCalls}`);
+      const n = (await notices(page)).join('\n');
+      if (variant === 'falla') assert(n.includes('No pude actualizar el resumen'), 'avisa el fallo del resumen');
+      if (variant === 'cancela') assert(cancelled && n.includes('Ronda frenada'), 'se canceló durante el resumen');
+      const mem = await roomMem(page);
+      assert(mem.summary.startsWith('RESUMEN') && mem.upto, `${variant}: el resumen se recupera después`);
+      await ctx.close();
+    }
+  });
+
+  await test('memoria [Codex 2]: un resumen TRUNCADO no reemplaza al anterior ni avanza la cobertura', async () => {
+    const h = memoryHarness({ truncSummary: k => k === 0 });
+    const { ctx, page, go } = await newPage();
+    await go(h.handlers);
+    for (let i = 0; i < 3; i++) { await userTurn(page, h, i); await waitIdle(page); }
+    assert(h.st.summaries === 1, 'hubo un pedido de resumen');
+    let mem = await roomMem(page);
+    assert(mem.summary === '' && mem.upto === '' && mem.rev === 0, 'no guardó el truncado: ' + JSON.stringify(mem));
+    assert((await notices(page)).some(t => t.includes('TRUNCADO')), 'aviso visible');
+    await userTurn(page, h, 3);
+    await waitIdle(page);
+    assert(h.st.violations.length === 0, h.st.violations.join(' | '));
+    mem = await roomMem(page);
+    assert(mem.summary.includes('U-00') && mem.upto, 'el siguiente intento incluyó los pendientes (U-00)');
+    await ctx.close();
+  });
+
+  await test('memoria [Codex 3]: una respuesta tardía no pisa la edición manual del resumen (editar, borrar, no tocar)', async () => {
+    for (const variant of ['editar', 'borrar', 'no-tocar']) {
+      const h = memoryHarness({ delaySummary: k => (k === 0 ? 2000 : 0) });
+      const { ctx, page, go } = await newPage();
+      await go(h.handlers);
+      for (let i = 0; i < 2; i++) { await userTurn(page, h, i); await waitIdle(page); }
+      await page.evaluate(() => { const p = current(); p.summary = 'RESUMEN-A'; p.summaryRev = 5; });
+      await userTurn(page, h, 2);
+      await until(() => h.st.summaries >= 1);       // la actualización automática está esperando al proveedor
+      await page.click('#btnContext');
+      if (variant === 'editar') await page.fill('#ctxSummary', 'EDICION-MANUAL B');
+      if (variant === 'borrar') await page.fill('#ctxSummary', '');
+      if (variant === 'no-tocar') {
+        await until(() => page.evaluate(() => Boolean(current().summaryUpto))); // llega la automática con el diálogo abierto
+        await page.fill('#ctxDecisions', 'DECISION NUEVA');
+      }
+      await page.click('#btnSaveContext');
+      await waitIdle(page);
+      const mem = await roomMem(page);
+      const n = (await notices(page)).join('\n');
+      if (variant === 'editar') {
+        assert(mem.summary === 'EDICION-MANUAL B' && mem.upto === '', 'se conserva la edición y no avanza la marca: ' + JSON.stringify(mem));
+        assert(n.includes('conservé tu versión'), 'aviso');
+      }
+      if (variant === 'borrar') {
+        assert(mem.summary === '' && mem.upto === '', 'borrado conservado: ' + JSON.stringify(mem));
+        assert(n.includes('conservé tu versión'), 'aviso');
+      }
+      if (variant === 'no-tocar') {
+        assert(mem.summary.startsWith('RESUMEN U-') && mem.upto, 'guardar sin tocar el resumen no pisa la automática: ' + JSON.stringify(mem));
+        assert(await page.evaluate(() => current().decisions === 'DECISION NUEVA'), 'decisiones guardadas');
+      }
+      // La ronda siguiente sigue sin huecos y rearma el resumen partiendo de la versión del usuario.
+      await userTurn(page, h, 3);
+      await waitIdle(page);
+      assert(h.st.violations.length === 0, `${variant}: ${h.st.violations.join(' | ')}`);
+      const after = await roomMem(page);
+      assert(after.summary.startsWith('RESUMEN') && after.upto, `${variant}: resumen rearmado`);
+      await ctx.close();
+    }
   });
 
   /* ----- Audio (Chromium con micrófono falso) ----- */
