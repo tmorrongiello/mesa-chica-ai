@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<!--
+  MESA CHICA AI — v3
+  Un solo archivo (HTML + CSS + JS), sin frameworks, sin backend, sin build, sin scripts ni fuentes de terceros.
+  Bloques: 1) HTML + CSS · 2) JS núcleo (proveedores, errores, persistencia) · 3) JS interfaz.
+  Historial de cambios: CAMBIOS.md
+-->
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#090d16">
+  <meta name="referrer" content="no-referrer">
+  <title>Mesa Chica AI</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      --bg: #090d16;
+      --bg-elev: #0f1522;
+      --card: #111827;
+      --input: #1f2937;
+      --line: #1f2937;
+      --line-2: #374151;
+      --text: #f3f4f6;
+      --text-2: #d1d5db;
+      --muted: #9ca3af;
+      --faint: #6b7280;
+      --sky: #38bdf8;   --sky-d: #0284c7;
+      --red: #ef4444;   --red-d: #b91c1c;
+      --amber: #fcd34d; --amber-d: #f59e0b;
+      --blue: #93c5fd;
+      --emerald: #6ee7b7; --emerald-d: #059669;
+      --violet: #c4b5fd;
+      --purple: #d8b4fe;
+      --radius: 14px;
+      --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --safe-b: env(safe-area-inset-bottom, 0px);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    * { -webkit-tap-highlight-color: transparent; }
+    html { height: 100%; -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0; height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+      background: var(--bg); color: var(--text); font: 15px/1.45 var(--font);
+    }
+    button, input, textarea, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    [hidden] { display: none !important; }
+    .mono { font-family: var(--mono); }
+    .sr-only {
+      position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+    .skip { position: absolute; left: 8px; top: -60px; z-index: 100; background: var(--sky-d); color: #fff; padding: 8px 12px; border-radius: 10px; }
+    .skip:focus { top: 8px; }
+    :focus-visible { outline: 2px solid var(--sky); outline-offset: 2px; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 99px; }
+    a { color: var(--sky); }
+    code { font-family: var(--mono); font-size: .88em; background: rgba(0,0,0,.4); padding: 1px 5px; border-radius: 5px; color: var(--amber); }
+
+    /* ---------- Barra superior ---------- */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 8px 10px; background: rgba(17,24,39,.96); border-bottom: 1px solid var(--line); flex-shrink: 0;
+    }
+    .room-btn {
+      display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 62vw;
+      background: var(--input); border: 1px solid var(--line-2); border-radius: 12px; padding: 7px 10px; min-height: 40px;
+    }
+    .room-btn:hover { background: #273244; }
+    .room-btn .name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #34d399; flex-shrink: 0; }
+    .top-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .icon-btn {
+      position: relative; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
+      background: var(--input); border: 1px solid var(--line-2); border-radius: 12px; color: var(--text-2);
+    }
+    .icon-btn:hover { background: #273244; }
+    .icon-btn svg, .room-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+    .key-dot { position: absolute; top: -3px; right: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--amber-d); border: 2px solid var(--card); }
+    .key-dot.ok { background: #34d399; }
+
+    /* ---------- Barra de ronda ---------- */
+    .roundbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid rgba(31,41,55,.8); background: rgba(17,24,39,.6); flex-shrink: 0; }
+    .badges { display: flex; align-items: center; gap: 6px; overflow-x: auto; font-size: 12px; scrollbar-width: none; }
+    .badges::-webkit-scrollbar { display: none; }
+    .badges .lbl { color: var(--faint); flex-shrink: 0; }
+    .badge { flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 7px; border: 1px solid; font-weight: 500; }
+    .badge.active { box-shadow: 0 0 0 2px #fff; }
+    .badge .bdot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .arrow { color: #4b5563; flex-shrink: 0; }
+
+    /* Colores por asiento (rol), no por proveedor */
+    .seat-gemini   { --c: var(--blue);    --cbg: rgba(23,37,84,.42);  --cbd: rgba(30,64,175,.7); }
+    .seat-claude   { --c: var(--amber);   --cbg: rgba(69,26,3,.42);   --cbd: rgba(146,64,14,.7); }
+    .seat-chatgpt  { --c: var(--emerald); --cbg: rgba(2,44,34,.45);   --cbd: rgba(6,95,70,.7); }
+    .seat-sintesis { --c: var(--violet);  --cbg: rgba(46,16,101,.42); --cbd: rgba(109,40,217,.7); }
+    .badge[class*="seat-"] { color: var(--c); background: var(--cbg); border-color: var(--cbd); }
+
+    /* ---------- Avisos persistentes y operación en curso ---------- */
+    .warnbar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0;
+      padding: 8px 12px; font-size: 13px; background: #3b0a0a; color: #fecaca; border-bottom: 1px solid #7f1d1d;
+    }
+    .warnbar .grow { flex: 1 1 200px; }
+    .opbar {
+      display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 6px 10px; font-size: 13px;
+      background: rgba(17,24,39,.96); border-bottom: 1px solid var(--line); color: var(--amber);
+    }
+    .opbar .txt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(252,211,77,.25); border-top-color: var(--amber); animation: spin .8s linear infinite; flex-shrink: 0; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn-stop { background: rgba(127,29,29,.85); border: 1px solid #b91c1c; color: #fecaca; border-radius: 9px; padding: 5px 12px; font-weight: 600; font-size: 13px; min-height: 34px; flex-shrink: 0; }
+    .btn-stop:hover { background: #991b1b; }
+
+    /* ---------- Chat ---------- */
+    .chat-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .chat { flex: 1; overflow-y: auto; padding: 14px 10px 18px; display: flex; flex-direction: column; gap: 10px; overscroll-behavior: contain; }
+    .chat:focus { outline: none; }
+    .msg { animation: slideUp .2s ease-out; }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .notice {
+      max-width: 36rem; margin: 2px auto; text-align: center; padding: 7px 12px; border-radius: 12px;
+      background: rgba(31,41,55,.6); border: 1px solid rgba(55,65,81,.7); font-size: 12.5px; color: var(--muted); white-space: pre-wrap;
+    }
+    .notice.error { background: rgba(69,10,10,.55); border-color: rgba(153,27,27,.7); color: #fecaca; }
+    .notice.warn { background: rgba(66,32,6,.55); border-color: rgba(146,64,14,.7); color: #fde68a; }
+    .bubble-user { align-self: flex-end; max-width: 88%; background: rgba(2,132,199,.22); border: 1px solid rgba(14,165,233,.5); border-radius: 16px 4px 16px 16px; padding: 9px 13px; }
+    .bubble-agent { align-self: flex-start; width: 100%; max-width: 94%; background: var(--cbg); border: 1px solid var(--cbd); border-radius: 4px 16px 16px 16px; padding: 9px 13px; }
+    .msg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,.08); flex-wrap: wrap; }
+    .msg-who { display: flex; align-items: center; gap: 7px; min-width: 0; flex-wrap: wrap; }
+    .who { font-weight: 700; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--c, var(--sky)); }
+    .bubble-user .who { color: #7dd3fc; }
+    .role { font-size: 11.5px; color: var(--muted); }
+    .tag { font-size: 9.5px; font-weight: 700; letter-spacing: .06em; padding: 2px 6px; border-radius: 5px; background: #374151; color: #e5e7eb; }
+    .tag.emu { background: #78350f; color: #fde68a; }
+    .tag.trunc { background: #7c2d12; color: #fed7aa; }
+    .via { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+    .time { font-size: 10.5px; color: var(--muted); }
+    .msg-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; color: #e5e7eb; }
+    .msg-body strong { color: #fff; }
+    .newmsgs {
+      position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+      background: var(--sky-d); color: #fff; border: 0; border-radius: 99px; padding: 8px 16px; font-size: 13px; font-weight: 600;
+      box-shadow: 0 6px 18px rgba(0,0,0,.5); min-height: 38px;
+    }
+
+    /* ---------- Panel de audio pendiente ---------- */
+    .audio-panel { flex-shrink: 0; padding: 10px 12px; background: #1c1306; border-top: 1px solid #78350f; font-size: 13px; color: #fde68a; }
+    .audio-panel p { margin: 0 0 8px; }
+    .audio-panel audio { width: 100%; height: 36px; margin-bottom: 8px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+    /* ---------- Compositor ---------- */
+    .composer { flex-shrink: 0; background: var(--card); border-top: 1px solid var(--line); padding: 8px 10px calc(8px + var(--safe-b)); }
+    .composer-inner { max-width: 56rem; margin: 0 auto; display: flex; flex-direction: column; gap: 7px; }
+    .composer-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); padding: 0 2px; }
+    .meta-actions { display: flex; gap: 4px; }
+    .link-btn { background: none; border: 0; padding: 6px 8px; border-radius: 8px; font-weight: 600; font-size: 12.5px; min-height: 32px; }
+    .link-btn:hover:not(:disabled) { background: rgba(255,255,255,.06); }
+    .link-btn.violet { color: var(--violet); }
+    .link-btn.sky { color: #7dd3fc; }
+    .composer-row { display: flex; align-items: flex-end; gap: 8px; }
+    .rec-btn, .send-btn {
+      width: 48px; height: 48px; border-radius: 15px; border: 0; color: #fff; flex-shrink: 0;
+      display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(0,0,0,.35);
+    }
+    .rec-btn { background: #dc2626; }
+    .rec-btn:hover:not(:disabled) { background: var(--red); }
+    .rec-btn[data-state="recording"] { animation: pulse 1.5s infinite; }
+    .rec-btn[data-state="requesting"], .rec-btn[data-state="transcribing"] { background: #7f1d1d; }
+    .send-btn { background: var(--sky-d); }
+    .send-btn:hover:not(:disabled) { background: #0ea5e9; }
+    .rec-btn svg, .send-btn svg { width: 22px; height: 22px; }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(239,68,68,.7); }
+      70% { box-shadow: 0 0 0 12px rgba(239,68,68,0); }
+      100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+    }
+    .input-wrap { flex: 1; min-width: 0; background: var(--input); border: 1px solid var(--line-2); border-radius: 15px; padding: 7px 11px; display: flex; }
+    .input-wrap:focus-within { border-color: var(--sky); }
+    .input-wrap textarea {
+      width: 100%; background: transparent; border: 0; resize: none; outline: none;
+      font-size: 16px; /* 16px evita el zoom automático de iOS al enfocar */
+      line-height: 1.35; max-height: 32dvh; min-height: 44px;
+    }
+    .input-wrap textarea::placeholder { color: var(--faint); }
+    .rec-status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #fca5a5; padding: 0 2px; flex-wrap: wrap; }
+    .rec-status .txt { flex: 1; min-width: 0; }
+
+    /* ---------- Botones genéricos ---------- */
+    .btn { border-radius: 11px; padding: 8px 14px; font-size: 13.5px; font-weight: 600; border: 1px solid var(--line-2); background: var(--input); color: var(--text); min-height: 40px; }
+    .btn:hover:not(:disabled) { background: #273244; }
+    .btn.primary { background: var(--sky-d); border-color: var(--sky-d); color: #fff; }
+    .btn.primary:hover:not(:disabled) { background: #0ea5e9; }
+    .btn.ok { background: var(--emerald-d); border-color: var(--emerald-d); color: #fff; }
+    .btn.warn { background: var(--amber-d); border-color: var(--amber-d); color: #111; }
+    .btn.danger { background: rgba(69,10,10,.6); border-color: #991b1b; color: #fca5a5; }
+    .btn.danger:hover:not(:disabled) { background: rgba(127,29,29,.8); }
+    .btn.sm { padding: 5px 10px; font-size: 12.5px; min-height: 34px; }
+
+    /* ---------- Diálogos ---------- */
+    dialog {
+      padding: 0; border: 1px solid var(--line-2); border-radius: 18px; background: var(--card); color: var(--text);
+      width: min(36rem, calc(100vw - 20px)); max-height: calc(100dvh - 24px); box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    }
+    dialog::backdrop { background: rgba(0,0,0,.78); }
+    .dlg { display: flex; flex-direction: column; max-height: calc(100dvh - 26px); }
+    .dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+    .dlg-head h2 { margin: 0; font-size: 16px; }
+    .dlg-body { padding: 14px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; font-size: 13.5px; }
+    .dlg-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 10px 16px calc(12px + var(--safe-b)); border-top: 1px solid var(--line); }
+    .dlg-foot .end { display: flex; gap: 8px; margin-left: auto; }
+    .close-btn { width: 38px; height: 38px; border-radius: 10px; border: 0; background: transparent; color: var(--muted); font-size: 18px; }
+    .close-btn:hover { background: var(--input); color: #fff; }
+
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field > label, .lbl-strong { font-weight: 600; font-size: 13px; color: var(--text-2); }
+    .field input[type="text"], .field input[type="password"], .field input[type="number"], .field textarea, .field select {
+      width: 100%; background: var(--input); border: 1px solid var(--line-2); border-radius: 11px; padding: 9px 11px;
+      font-size: 16px; color: var(--text);
+    }
+    .field textarea { resize: vertical; line-height: 1.45; }
+    .field input:focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--sky); }
+    .hint { font-size: 12px; color: var(--muted); margin: 0; }
+    .note { border-radius: 12px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; background: rgba(31,41,55,.7); border: 1px solid var(--line-2); color: var(--text-2); }
+    .note.amber { background: rgba(66,32,6,.5); border-color: rgba(146,64,14,.7); color: #fde68a; }
+    .note.red { background: rgba(69,10,10,.5); border-color: rgba(153,27,27,.7); color: #fecaca; }
+    .note p { margin: 0 0 4px; } .note p:last-child { margin: 0; }
+    .check { display: flex; align-items: flex-start; gap: 10px; background: rgba(31,41,55,.7); border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 12px; }
+    .check input { width: 18px; height: 18px; margin: 2px 0 0; flex-shrink: 0; accent-color: var(--sky); }
+    .check label { font-weight: 600; font-size: 13.5px; color: var(--text); }
+    .check .hint { margin-top: 3px; }
+    fieldset { border: 1px solid var(--line-2); border-radius: 14px; padding: 10px 12px 12px; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+    legend { padding: 0 6px; font-weight: 700; font-size: 13px; color: var(--text); }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 420px) { .grid2 { grid-template-columns: 1fr; } }
+
+    /* Lista de salas */
+    .room-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .room-item { display: flex; align-items: stretch; gap: 6px; }
+    .room-open {
+      flex: 1; min-width: 0; text-align: left; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-2); background: rgba(31,41,55,.7); min-height: 46px;
+    }
+    .room-open[aria-current="true"] { background: rgba(8,47,73,.7); border-color: rgba(14,165,233,.8); }
+    .room-open .n { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .room-open .c { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+    .busy-tag { font-size: 10px; font-weight: 700; color: var(--amber); }
+    .room-del { width: 46px; border-radius: 12px; border: 1px solid var(--line-2); background: rgba(31,41,55,.7); color: var(--muted); font-size: 16px; }
+    .room-del:hover { color: #fca5a5; border-color: #991b1b; }
+
+    /* Vista previa de importación */
+    .preview { border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 12px; background: rgba(9,13,22,.6); display: flex; flex-direction: column; gap: 8px; }
+    .preview ul { margin: 0; padding-left: 18px; max-height: 30dvh; overflow-y: auto; }
+    .preview li { margin: 2px 0; overflow-wrap: anywhere; }
+    .radio-row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .radio-row label { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+    .radio-row input { width: 18px; height: 18px; accent-color: var(--sky); }
+
+    /* ---------- Toasts ---------- */
+    .toasts {
+      position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(132px + var(--safe-b)); z-index: 60;
+      display: flex; flex-direction: column; gap: 8px; width: min(30rem, calc(100vw - 24px)); pointer-events: none;
+    }
+    .toast {
+      pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 12px;
+      background: #1f2937; border: 1px solid var(--line-2); color: var(--text); font-size: 13.5px; box-shadow: 0 10px 30px rgba(0,0,0,.55);
+      animation: slideUp .2s ease-out;
+    }
+    .toast .t { flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .toast.error { background: #3b0a0a; border-color: #991b1b; color: #fecaca; }
+    .toast.warn { background: #3a2306; border-color: #92400e; color: #fde68a; }
+    .toast.ok { background: #052e22; border-color: #047857; color: #a7f3d0; }
+    .toast button { background: transparent; border: 0; color: inherit; opacity: .8; font-size: 16px; padding: 0 4px; min-width: 32px; min-height: 28px; }
+
+    @media (min-width: 640px) {
+      .room-btn { max-width: 22rem; }
+      .bubble-user { max-width: 75%; }
+      .bubble-agent { max-width: 82%; }
+      .chat { padding: 16px 16px 20px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+      .rec-btn[data-state="recording"] { box-shadow: 0 0 0 3px rgba(239,68,68,.8); }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#txtInput">Ir al cuadro de texto</a>
+
+  <header class="topbar">
+    <button id="btnRooms" class="room-btn" type="button" aria-haspopup="dialog" aria-label="Cambiar de sala">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="roomTitle" class="name">Mesa Chica</span>
+      <svg aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </button>
+    <nav class="top-actions" aria-label="Acciones">
+      <button id="btnContext" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Contexto, decisiones y glosario de la sala" title="Contexto de la sala">
+        <svg aria-hidden="true" fill="none" stroke="#fbbf24" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.6a1 1 0 01.7.3l5.4 5.4a1 1 0 01.3.7V19a2 2 0 01-2 2z"/></svg>
+      </button>
+      <button id="btnExport" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Exportar o importar" title="Exportar / importar">
+        <svg aria-hidden="true" fill="none" stroke="#38bdf8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v11m0-11L8 8m4-4l4 4"/></svg>
+      </button>
+      <button id="btnSettings" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Ajustes del debate, modelos y audio" title="Ajustes">
+        <svg aria-hidden="true" fill="none" stroke="#c4b5fd" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2" stroke-width="2"/><circle cx="10" cy="12" r="2" stroke-width="2"/><circle cx="18" cy="18" r="2" stroke-width="2"/></svg>
+      </button>
+      <button id="btnKeys" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Conexiones API (claves)" title="Conexiones API">
+        <svg aria-hidden="true" fill="none" stroke="#34d399" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.7 5.7L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.6a1 1 0 01.3-.7l6-6A6 6 0 1121 9z"/></svg>
+        <span id="keyDot" class="key-dot" aria-hidden="true"></span>
+      </button>
+    </nav>
+  </header>
+
+  <div class="roundbar">
+    <div id="badges" class="badges" role="group" aria-label="Orden de la próxima ronda"></div>
+  </div>
+
+  <div id="storageWarning" class="warnbar" role="alert" hidden>
+    <span id="storageWarningText" class="grow"></span>
+    <button id="btnWarnExport" class="btn sm" type="button">Exportar JSON</button>
+  </div>
+
+  <div id="opBar" class="opbar" hidden>
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="opText" class="txt"></span>
+    <span id="opTimer" class="mono" aria-hidden="true"></span>
+    <button id="btnStop" class="btn-stop" type="button">Frenar</button>
+  </div>
+
+  <div class="chat-wrap">
+    <main id="chat" class="chat" tabindex="-1" aria-label="Conversación de la sala"></main>
+    <button id="btnNewMsgs" class="newmsgs" type="button" hidden>Nuevos mensajes ↓</button>
+  </div>
+
+  <section id="audioPanel" class="audio-panel" aria-labelledby="audioPanelTitle" hidden>
+    <p id="audioPanelTitle"><strong>Audio sin transcribir.</strong> <span id="audioPanelText"></span></p>
+    <audio id="audioPreview" controls preload="metadata"></audio>
+    <div class="row">
+      <button id="btnAudioRetry" class="btn sm warn" type="button">Reintentar transcripción</button>
+      <button id="btnAudioDownload" class="btn sm" type="button">Descargar audio</button>
+      <button id="btnAudioDiscard" class="btn sm danger" type="button">Descartar</button>
+    </div>
+  </section>
+
+  <footer class="composer">
+    <div class="composer-inner">
+      <div class="composer-meta">
+        <span id="sendInfo">Cada turno envía: contexto + decisiones vigentes + últimos 14 mensajes.</span>
+        <div class="meta-actions">
+          <button id="btnSynth" class="link-btn violet" type="button">Sintetizar</button>
+          <button id="btnMore" class="link-btn sky" type="button">+1 ronda</button>
+        </div>
+      </div>
+      <div id="recStatus" class="rec-status" hidden>
+        <span id="recStatusText" class="txt"></span>
+        <span id="recTimer" class="mono"></span>
+        <button id="btnCancelTranscribe" class="btn sm danger" type="button" hidden>Cancelar transcripción</button>
+      </div>
+      <div class="composer-row">
+        <button id="btnRecord" class="rec-btn" type="button" data-state="idle" aria-label="Grabar audio">
+          <svg id="icoMic" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-14 0m7 7v4m-4 0h8M12 14a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
+          <svg id="icoStop" aria-hidden="true" fill="currentColor" viewBox="0 0 24 24" hidden><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+        <div class="input-wrap">
+          <label for="txtInput" class="sr-only">Tu idea o mensaje para la mesa</label>
+          <textarea id="txtInput" rows="2" autocomplete="off" placeholder="Contá tu idea o tocá el micrófono…"></textarea>
+        </div>
+        <button id="btnSend" class="send-btn" type="button" aria-label="Enviar y arrancar la ronda">
+          <svg aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+    </div>
+  </footer>
+
+  <div id="srStatus" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  <div id="toasts" class="toasts"></div>
+
+  <!-- ================= DIÁLOGO: SALAS ================= -->
+  <dialog id="dlgRooms" aria-labelledby="dlgRoomsTitle">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="dlgRoomsTitle">Salas</h2>
+        <button class="close-btn" type="button" data-close aria-label="Cerrar">✕</button>
+      </div>
+      <div class="dlg-body">
+        <ul id="roomList" class="room-list"></ul>
+        <form id="formNewRoom" class="field">
+          <label for="newRoomName">Nueva sala</label>
+          <input type="text" id="newRoomName" maxlength="80" autocomplete="off" placeholder="Ej.: App Figuritas, Zona Warnes…">
+          <button class="btn primary" type="submit">+ Crear sala</button>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ================= DIÁLOGO: CONTEXTO DE SALA ================= -->
+  <dialog id="dlgContext" aria-labelledby="dlgContextTitle">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="dlgContextTitle">Contexto de la sala</h2>
+        <button class="close-btn" type="button" data-close aria-label="Cerrar">✕</button>
+      </div>
+      <div class="dlg-body">
+        <div class="field">
+          <label for="ctxName">Nombre de la sala</label>
+          <input type="text" id="ctxName" maxlength="80" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="ctxContext">Contexto del proyecto</label>
+          <textarea id="ctxContext" rows="7"></textarea>
+          <p class="hint">Lo leen todos los panelistas antes de hablar.</p>
+        </div>
+        <div class="field">
+          <label for="ctxDecisions">Decisiones vigentes</label>
+          <textarea id="ctxDecisions" rows="4" placeholder="Ej.: Stack: Next.js en Vercel. Nada de cuentas de usuario en el MVP."></textarea>
+          <p class="hint">Se incluyen en cada prompt. Solo cambian si las editás vos: la síntesis nunca las sobrescribe.</p>
+        </div>
+        <div class="field">
+          <label for="ctxGlossary">Glosario para la transcripción</label>
+          <input type="text" id="ctxGlossary" autocomplete="off" placeholder="Ej.: Krillion, Oberman, Next.js, Railway…">
+          <p class="hint">Nombres y jerga que el transcriptor debería escribir bien. En Groq/OpenAI el texto de ayuda se recorta (Groq admite ~224 tokens).</p>
+        </div>
+        <p class="note">Cada turno envía al proveedor: contexto + decisiones vigentes + los últimos 14 mensajes de la conversación. Los cambios aplican a la próxima ronda.</p>
+      </div>
+      <div class="dlg-foot">
+        <button id="btnClearHistory" class="btn danger" type="button">Limpiar historial</button>
+        <div class="end"><button id="btnSaveContext" class="btn warn" type="button">Guardar</button></div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ================= DIÁLOGO: CONEXIONES API ================= -->
+  <dialog id="dlgKeys" aria-labelledby="dlgKeysTitle">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="dlgKeysTitle">Conexiones API</h2>
+        <button class="close-btn" type="button" data-close aria-label="Cerrar">✕</button>
+      </div>
+      <div class="dlg-body">
+        <div class="note">
+          <p>Las claves viajan directo desde este navegador a cada proveedor (Anthropic, OpenAI, Google, Groq), sin servidor intermedio. Por defecto quedan <strong>solo en memoria</strong>: al cerrar o recargar la pestaña se pierden.</p>
+          <p>Una suscripción de chat (Claude Pro, ChatGPT Plus, Gemini Advanced, etc.) <strong>no incluye acceso a la API</strong>: necesitás claves de API con crédito o cuota propia.</p>
+        </div>
+        <div class="field">
+          <label for="keyClaude">Anthropic (Claude)</label>
+          <input type="password" id="keyClaude" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="sk-ant-…">
+        </div>
+        <div class="field">
+          <label for="keyOpenai">OpenAI (debate + transcripción)</label>
+          <input type="password" id="keyOpenai" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="sk-…">
+        </div>
+        <div class="field">
+          <label for="keyGemini">Google Gemini (debate + transcripción)</label>
+          <input type="password" id="keyGemini" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="AIza…">
+        </div>
+        <div class="field">
+          <label for="keyGroq">Groq (transcripción rápida + respaldo de chat)</label>
+          <input type="password" id="keyGroq" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="gsk_…">
+        </div>
+        <div class="check">
+          <input type="checkbox" id="chkShowKeys">
+          <div><label for="chkShowKeys">Mostrar claves</label></div>
+        </div>
+        <div class="check">
+          <input type="checkbox" id="chkRememberKeys" aria-describedby="rememberHint">
+          <div>
+            <label for="chkRememberKeys">Recordar claves en este navegador</label>
+            <p id="rememberHint" class="hint">Desactivado por defecto. Si lo activás, las claves se guardan <strong>sin cifrar</strong> en el <code>localStorage</code> de este sitio: cualquier script que corra en el mismo origen (por ejemplo, otra página tuya publicada en el mismo dominio de GitHub Pages) puede leerlas. No lo actives en un dispositivo compartido. Al desactivarlo se borra la copia guardada al instante.</p>
+          </div>
+        </div>
+      </div>
+      <div class="dlg-foot">
+        <button id="btnClearKeys" class="btn danger" type="button">Borrar claves</button>
+        <div class="end"><button id="btnApplyKeys" class="btn ok" type="button">Aplicar</button></div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ================= DIÁLOGO: AJUSTES ================= -->
+  <dialog id="dlgSettings" aria-labelledby="dlgSettingsTitle">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="dlgSettingsTitle">Ajustes</h2>
+        <button class="close-btn" type="button" data-close aria-label="Cerrar">✕</button>
+      </div>
+      <div class="dlg-body">
+        <p class="note">Los cambios aplican a la <strong>próxima</strong> operación: una ronda o transcripción en curso sigue con la configuración con la que arrancó.</p>
+
+        <fieldset>
+          <legend>Ronda</legend>
+          <div class="check">
+            <input type="checkbox" id="setRotate">
+            <div><label for="setRotate">Rotar quién arranca cada ronda</label><p class="hint">Evita que el mismo rol enmarque siempre la discusión.</p></div>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="setSynthesis">
+            <div><label for="setSynthesis">Cerrar cada ronda con SÍNTESIS neutral</label><p class="hint">Acuerdos, desacuerdo clave, decisión recomendada y próximo paso. Si está apagada, el último panelista cierra con propuesta, desacuerdos y próximo paso.</p></div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Modelos de debate</legend>
+          <div class="field"><label for="mClaude">Claude (Arquitectura)</label><input type="text" id="mClaude" class="mono" spellcheck="false" autocapitalize="off"></div>
+          <div class="field"><label for="mOpenai">OpenAI (Datos y lógica) — Responses API</label><input type="text" id="mOpenai" class="mono" spellcheck="false" autocapitalize="off"></div>
+          <div class="field"><label for="mGemini">Gemini (Diseño y UX)</label><input type="text" id="mGemini" class="mono" spellcheck="false" autocapitalize="off"></div>
+          <div class="field"><label for="mGroq">Groq (solo respaldo de chat)</label><input type="text" id="mGroq" class="mono" spellcheck="false" autocapitalize="off"></div>
+          <div class="field"><label for="setMaxTokens">Máximo de tokens de salida por turno</label><input type="number" id="setMaxTokens" min="256" max="16000" step="64"><p class="hint">Algunos modelos cuentan el razonamiento interno dentro de este límite; si ves respuestas TRUNCADAS, subilo.</p></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Transcripción</legend>
+          <div class="field">
+            <label for="setTxProvider">Proveedor</label>
+            <select id="setTxProvider">
+              <option value="auto">Automático (Groq → OpenAI → Gemini, el primero con clave)</option>
+              <option value="groq">Groq</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+            </select>
+          </div>
+          <div class="field"><label for="txGroq">Modelo Groq</label><input type="text" id="txGroq" class="mono" spellcheck="false" autocapitalize="off"></div>
+          <div class="field"><label for="txOpenai">Modelo OpenAI</label><input type="text" id="txOpenai" class="mono" spellcheck="false" autocapitalize="off"></div>
+          <div class="field">
+            <label for="txGemini">Modelo Gemini</label>
+            <input type="text" id="txGemini" class="mono" spellcheck="false" autocapitalize="off" list="txGeminiOptions">
+            <datalist id="txGeminiOptions"><option value="gemini-3.5-flash-lite"><option value="gemini-3.5-transcribe"></datalist>
+            <p class="hint">Se usa vía <code>generateContent</code>. Existe <code>gemini-3.5-transcribe</code>, pero su API no está verificada acá: si lo probás y falla, volvé a <code>gemini-3.5-flash-lite</code>.</p>
+          </div>
+          <p class="hint">Ninguna transcripción es perfecta: revisá el texto antes de enviarlo.</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Respaldo</legend>
+          <div class="check">
+            <input type="checkbox" id="setFbMissing">
+            <div><label for="setFbMissing">Usar otro proveedor si falta la clave</label></div>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="setFbError">
+            <div><label for="setFbError">Usar otro proveedor si falla la llamada</label></div>
+          </div>
+          <p class="hint">Orden: <strong>Claude → OpenAI → Gemini → Groq</strong>, sin repetir proveedor en un mismo turno. La tarjeta muestra el rol, la etiqueta EMULADO y el proveedor/modelo real.</p>
+          <p class="note amber">Ojo: el respaldo manda el contexto y la conversación a <strong>otro proveedor</strong> y consume más cuota/crédito. Además, un rol emulado no es un debate real entre modelos distintos.</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Tiempos y reintentos</legend>
+          <div class="grid2">
+            <div class="field"><label for="setTimeoutDebate">Timeout por turno (s)</label><input type="number" id="setTimeoutDebate" min="10" max="600" step="5"></div>
+            <div class="field"><label for="setTimeoutTx">Timeout transcripción (s)</label><input type="number" id="setTimeoutTx" min="10" max="900" step="5"></div>
+          </div>
+          <div class="field"><label for="setRetries">Reintentos ante 429/5xx</label><input type="number" id="setRetries" min="0" max="3" step="1"><p class="hint">Solo para límite de uso (429) y errores del proveedor (5xx). Si el proveedor pide esperar más de 10 s, se corta y se avisa en lugar de esperar en silencio.</p></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Audio</legend>
+          <div class="grid2">
+            <div class="field"><label for="setMaxRec">Duración máxima (s)</label><input type="number" id="setMaxRec" min="10" max="1800" step="10"></div>
+            <div class="field"><label for="setMaxMB">Tamaño máximo (MB)</label><input type="number" id="setMaxMB" min="1" max="25" step="1"></div>
+          </div>
+          <p class="hint">Groq (free) y OpenAI aceptan hasta 25 MB; Gemini, ~20 MB por pedido. Al llegar al límite la grabación se corta y te aviso.</p>
+          <div class="check">
+            <input type="checkbox" id="setAutoSend">
+            <div><label for="setAutoSend">Enviar automáticamente al terminar de transcribir</label><p class="hint">Apagado por defecto. Nunca se envía solo si cambiaste de sala, cancelaste o hay una ronda en curso.</p></div>
+          </div>
+        </fieldset>
+      </div>
+      <div class="dlg-foot">
+        <button id="btnResetSettings" class="btn" type="button">Valores por defecto</button>
+        <div class="end"><button id="btnSaveSettings" class="btn primary" type="button">Guardar</button></div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ================= DIÁLOGO: EXPORTAR / IMPORTAR ================= -->
+  <dialog id="dlgExport" aria-labelledby="dlgExportTitle">
+    <div class="dlg">
+      <div class="dlg-head">
+        <h2 id="dlgExportTitle">Exportar / importar</h2>
+        <button class="close-btn" type="button" data-close aria-label="Cerrar">✕</button>
+      </div>
+      <div class="dlg-body">
+        <fieldset>
+          <legend>Sala actual (Markdown)</legend>
+          <div class="row">
+            <button id="btnCopyMd" class="btn primary" type="button">Copiar Markdown</button>
+            <button id="btnDownloadMd" class="btn" type="button">Descargar .md</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Respaldo de salas (JSON)</legend>
+          <p class="hint">Incluye contexto, decisiones, glosario y mensajes de todas las salas. Nunca incluye claves.</p>
+          <div class="row"><button id="btnExportJson" class="btn" type="button">Descargar JSON</button></div>
+          <div class="field">
+            <label for="fileImport">Importar JSON</label>
+            <input type="file" id="fileImport" accept="application/json,.json">
+          </div>
+          <div id="importPreview" class="preview" hidden>
+            <div id="importSummary"></div>
+            <ul id="importList"></ul>
+            <div class="radio-row" role="radiogroup" aria-label="Modo de importación">
+              <label><input type="radio" name="importMode" value="add" checked> Agregar</label>
+              <label><input type="radio" name="importMode" value="replace"> Reemplazar todo</label>
+            </div>
+            <p class="hint">Agregar suma las salas importadas (con ids nuevos si chocan). Reemplazar borra las salas actuales.</p>
+            <div class="row">
+              <button id="btnImportConfirm" class="btn primary" type="button">Importar</button>
+              <button id="btnImportCancel" class="btn" type="button">Cancelar</button>
+            </div>
+          </div>
+        </fieldset>
+      </div>
+    </div>
+  </dialog>
+
+<!--BLOQUE2-->
+<!--BLOQUE3-->
+</body>
+</html>
