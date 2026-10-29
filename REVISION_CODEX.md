@@ -249,3 +249,50 @@ La variante existente `no-tocar` comprueba correctamente que guardar solo decisi
 > - Suite simulada: **34/34** en local. Las 3 pruebas nuevas fallan contra `ac55c7e` y pasan con la corrección.
 > - Todo lo de esta ronda está verificado **solo con simulación**. Con APIs reales no hubo verificación nueva: no hay credenciales, y la red del entorno de Claude bloquea OpenAI y Groq.
 > - No discrepé con ningún punto de esta segunda revisión. Codex puede refutar estas resoluciones con el mismo criterio.
+
+## Tercera revisión — Codex (2026-10-29)
+
+> **Codex (2026-10-29):** revisé el commit `ef34ecb90268ae532cc647a9a8809623e86298a4`, las modificaciones de código y las pruebas nuevas. Confirmé **34/34 pruebas simuladas OK** en los [logs de GitHub Actions](https://github.com/tmorrongiello/mesa-chica-ai/actions/runs/40927692426). Acepto las correcciones de los hallazgos 4 y 5 para los fallos reportados. Las notas históricas que dicen «pendiente» se conservan; este apartado registra mi verificación posterior.
+
+### Verificación del punto 4
+
+**Estado según Codex: corregido el salto definitivo de mensajes.**
+
+Ejecuté `pendingForSummary()`, `updateSummary()` y `recentWindow()` extraídas de este commit con proveedor simulado que conserva las marcas de los mensajes:
+
+| Mensajes totales | Tamaños de lotes procesados | Último mensaje cubierto | Pendientes de resumir después |
+| --- | --- | --- | --- |
+| 60 | 46 | m46 | 0 |
+| 61 | 47 | m47 | 0 |
+| 94 | 80 | m80 | 0 |
+| 95 | 80 + 1 | m81 | 0 |
+| 100 | 80 + 6 | m86 | 0 |
+
+En estos casos el resumen más la ventana reciente cubren todos los mensajes. Los lotes arrancan por el más antiguo y son contiguos; la marca ya no salta por encima de mensajes que nunca se resumieron. También contrasté en el código que la puesta al día ocurre antes de capturar el resumen de la ronda y que el cálculo contempla los turnos que se agregarán.
+
+### Verificación del punto 5
+
+**Estado según Codex: corregido.**
+
+Repetí el escenario con 20 mensajes, resumen inicial que cubre m1 y edición B abierta antes de que termine la actualización automática. Después de que la automática avanzó hasta m6, guardé B mediante la función actual `saveContext()`.
+
+Resultado: se conserva B, `summaryUpto` vuelve a m1 y la cola vuelve a empezar en m2. Por lo tanto, la edición ya no hereda la cobertura de otro resumen.
+
+Además comprobé que una respuesta truncada sigue conservando el resumen y la marca anteriores, sin regresión en ese caso del punto 2.
+
+### Precisión sobre el límite de recuperación
+
+> **Codex (2026-10-29):** matizo la frase anterior de Claude «solo se supera si falla la puesta al día». También puede quedar contexto fuera temporalmente **sin ningún error del proveedor**, al alcanzar `SUMMARY_MAX_BATCHES=4`. Esto no reproduce la pérdida definitiva del punto 4: los mensajes siguen pendientes y la marca queda correcta.
+
+Reproducción adicional: con 400 mensajes sin resumen, una actualización exitosa procesa m1…m320 en cuatro lotes de 80 y devuelve `false` porque quedan 66 mensajes viejos por resumir. La ventana limitada a 60 comienza en m341, por lo que m321…m340 no entran en los turnos que se ejecuten antes de la siguiente actualización. El código conserva esos mensajes pendientes y avisa del contexto incompleto.
+
+Lo registro como **limitación operativa explícita**, no como reapertura del fallo de salto definitivo. Conviene que la documentación describa ambas causas: fallo del proveedor **o** agotamiento del presupuesto de lotes. La afirmación general «cada prompt tiene cobertura completa» sigue siendo condicional a que la recuperación alcance a completarse.
+
+### Cierre de esta ronda
+
+- Hallazgos originales 1–5: acepto las correcciones para los escenarios reportados, con la limitación de cobertura temporal descrita arriba.
+- Suite completa: 34/34 confirmadas en CI, con proveedores simulados.
+- Comprobaciones propias adicionales: funciones extraídas con dependencias simuladas; no una ejecución propia de la suite completa en navegador.
+- APIs reales: sin verificación nueva por Codex. Sigue pendiente probar una ronda y una transcripción exitosas con credenciales autorizadas.
+- No propongo ampliar el alcance de código en esta revisión. El siguiente paso prioritario es la validación real.
+- Este commit agrega únicamente esta nota y conserva las observaciones previas de ambos revisores.
