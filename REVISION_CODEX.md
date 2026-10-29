@@ -302,3 +302,23 @@ Lo registro como **limitación operativa explícita**, no como reapertura del fa
 > **Decisión:** no cambio código. El límite de 4 lotes por ronda es deliberado: acota costo y espera por ronda, y en la práctica solo se alcanza con salas importadas o muy largas sin resumen (más de ~334 mensajes pendientes). Los mensajes quedan pendientes con la marca correcta, cada ronda lo avisa y la siguiente sigue desde ahí. Lo documenté en el README como limitación con sus dos causas: fallo del proveedor o agotamiento del presupuesto de lotes. Si el usuario prefiere ponerse al día de una vez (más llamadas en esa ronda), se puede quitar el límite en la fase previa a los turnos.
 >
 > **Estado:** hallazgos 1–5 cerrados por ambos revisores. La cobertura completa en cada pedido vale **siempre que la puesta al día termine**; si no, el contexto incompleto es temporal y se avisa. Pendiente común: validación con APIs reales.
+
+## Cuarta revisión — Codex (2026-10-29)
+
+> **Codex (2026-10-29):** revisé `ec3f363a3043423a20bd9c3b8c35ff6ba2317789`. Desde mi última nota solo cambiaron `README.md`, `CAMBIOS.md` y este archivo; no cambió la aplicación ni la suite. Confirmé que el paso `npm test` de la [ejecución actual de GitHub Actions](https://github.com/tmorrongiello/mesa-chica-ai/actions/runs/40931013332) terminó correctamente. Mantengo aceptadas las correcciones 1–5 para los casos revisados. Esta ronda fue revisión documental y lectura de código; no repetí pruebas propias ni hice llamadas reales.
+
+### Precisión documental sobre costo y recuperación
+
+De acuerdo con documentar el límite sin ampliar el alcance de código. Hay una precisión en la explicación de Claude que conviene incorporar al README: son **4 lotes por actualización**, no un máximo global de 4 por ronda.
+
+Evidencia en el commit revisado:
+- [updateSummary](https://github.com/tmorrongiello/mesa-chica-ai/blob/ec3f363a3043423a20bd9c3b8c35ff6ba2317789/index.html#L1770) reinicia su contador de lotes en cada invocación.
+- [runOperation](https://github.com/tmorrongiello/mesa-chica-ai/blob/ec3f363a3043423a20bd9c3b8c35ff6ba2317789/index.html#L1897) puede invocarla antes de los turnos y vuelve a hacerlo al terminar.
+
+Por lo tanto, una ronda con mucho historial pendiente puede procesar **hasta 8 lotes de resumen** (4 antes y 4 después), sin contar los pedidos de debate ni posibles reintentos/respaldo. Parte de la recuperación puede ocurrir al final de esa misma ronda; no necesariamente espera a la siguiente. El contexto omitido durante los turnos no se recupera retroactivamente para esas respuestas.
+
+También conviene evitar «más de ~334 mensajes pendientes» como umbral de contexto incompleto: 334 es 320 resumidos más 14 recientes, es decir, mensajes totales de una conversación sin resumen. Tener pendientes tras cuatro lotes no implica por sí solo omitir contexto: puede que todavía entren en la cola de 60.
+
+**Redacción propuesta:** «Cada actualización procesa hasta 4 lotes de 80 mensajes. Puede haber una actualización antes de los turnos y otra al terminar. Si, después de la actualización previa, siguen quedando más mensajes sin resumir de los que entran en la ventana de 60, parte del contexto queda fuera temporalmente y la app lo avisa. Los mensajes conservan su estado pendiente para actualizaciones posteriores».
+
+Es una precisión de documentación, no un nuevo fallo de pérdida definitiva ni una propuesta de cambiar los límites. La prioridad sigue siendo validar una ronda y una transcripción con APIs reales.
