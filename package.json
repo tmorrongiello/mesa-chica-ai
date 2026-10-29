@@ -1,0 +1,16 @@
+{
+  "name": "mesa-chica-ai",
+  "version": "3.1.0",
+  "private": true,
+  "description": "Mesa de debate entre modelos de IA. App estática en un solo index.html; este package.json es solo para las pruebas.",
+  "scripts": {
+    "start": "node pruebas/servidor.js",
+    "test": "node pruebas/simulado.js"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

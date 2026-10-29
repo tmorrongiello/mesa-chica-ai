@@ -64,3 +64,33 @@ Archivo nuevo: `index.html` (reemplaza a `mesa-chica-ai.html`, que queda como re
 - Solo se probó en Chromium; falta Safari iOS (graba `audio/mp4` → se manda como `.m4a`).
 - Una sola ronda a la vez en toda la app (podés grabar/transcribir en paralelo).
 - En GitHub Pages, todas las páginas de `tmorrongiello.github.io` comparten origen y `localStorage`.
+
+## v3.1 — sesión 2026-10-29 (revisión externa)
+
+Prioridades pedidas: validar APIs reales, sostener el contexto en debates largos, hacer reproducibles las pruebas y evaluar si conviene modularizar.
+
+### Contexto en debates largos
+- **Objetivo de la sala**: campo nuevo, editable. Si está vacío, se completa con el primer mensaje. Va en cada prompt.
+- **Resumen acumulado**: cuando hay mensajes que ya no entran en los últimos 14, al final de la ronda se hace una llamada extra que los incorpora al resumen anterior. Lo escribe la IA y tiene tres secciones: pedido del usuario, propuestas de los modelos y lo que queda abierto. Se puede ver y editar en Contexto.
+- En los prompts quedan secciones separadas: objetivo, contexto, decisiones vigentes (aprobadas por el usuario) y resumen acumulado (propuestas, no decisiones). Ni la síntesis ni el resumen tocan las decisiones.
+- "Limpiar historial" borra también el resumen. El Markdown exportado incluye objetivo y resumen.
+
+### Corrección encontrada contra la API real
+- Gemini responde **400 `API_KEY_INVALID`** (no 401) cuando la clave es inválida. Antes la app lo mostraba como "ID de modelo inválido"; ahora dice "Clave rechazada".
+
+### Reproducibilidad
+- `README.md`: cómo usar la app, cómo correr las pruebas y estado de verificación (simulado vs. real).
+- `package.json` + `package-lock.json` (Playwright 1.63.0, solo para pruebas), `.gitignore`.
+- `pruebas/servidor.js`: servidor estático sin dependencias (`npm start`).
+- `.github/workflows/pruebas.yml`: corre `npm test` en cada push y PR, sin claves.
+
+### Verificación
+- **Simulada:** 28/28 OK. Se agregaron dos pruebas: el 400 de clave inválida de Gemini, y una conversación de 6 rondas / 30 mensajes que comprueba objetivo fijo, resumen encadenado que cubre exactamente lo que salió de la ventana, decisiones intactas y solo 14 mensajes en el historial reciente.
+- **Real (sin claves):** CORS y respuesta de error de Anthropic y Gemini. OpenAI y Groq no se pudieron verificar: la red del entorno de desarrollo bloquea `api.openai.com` y `api.groq.com`. Detalle en README.
+- **Real (con claves): no se hizo.** Queda la tabla en el README para completarla a mano.
+
+### Modularizar: evaluación (no aplicado)
+- Opción sin build: separar en `js/proveedores.js`, `js/persistencia.js`, `js/debate.js`, `js/interfaz.js` y `css/estilos.css`, cargados como módulos ES nativos. GitHub Pages los sirve igual.
+- A favor: el núcleo (proveedores, validación, respaldo) se podría probar con `node --test`, sin navegador.
+- En contra: se pierde "un solo archivo para copiar". Abrirlo con doble clic (`file://`) deja de funcionar con módulos, aunque el micrófono ya requería `http(s)`.
+- Recomendación: hacerlo recién después de completar la verificación real.
