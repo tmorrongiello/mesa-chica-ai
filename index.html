@@ -618,7 +618,832 @@
     </div>
   </dialog>
 
-<!--BLOQUE2-->
+  <!-- ================= BLOQUE 2: NÚCLEO ================= -->
+  <script>
+  'use strict';
+  /* Proveedores, errores, timeouts, reintentos, persistencia y migración.
+     No toca el DOM: la interfaz (bloque 3) usa estas funciones. */
+
+  /* ---------------- Constantes ---------------- */
+  const STORE = {
+    projects: 'mesachica_projects_v1',          // se mantiene para no perder datos de la v1/v2
+    current: 'mesachica_current_proj_v1',
+    config: 'mesachica_config_v3',
+    keys: 'mesachica_keys_v3',                  // solo existe si "Recordar claves" está activo
+    legacyKeys: 'mesachica_keys_v1',
+    legacyModels: 'mesachica_models_v1',
+    legacySettings: 'mesachica_settings_v1',
+    backupPrefix: 'mesachica_projects_v1_respaldo_'
+  };
+
+  const PROVIDER_IDS = ['claude', 'openai', 'gemini', 'groq'];
+  const PROVIDER_LABEL = { claude: 'Claude', openai: 'OpenAI', gemini: 'Gemini', groq: 'Groq' };
+  const FALLBACK_ORDER = ['claude', 'openai', 'gemini', 'groq'];
+  const TRANSCRIBE_AUTO_ORDER = ['groq', 'openai', 'gemini'];
+  const HISTORY_LIMIT = 14;
+  const MAX_RETRY_AFTER_S = 10;
+
+  const DEFAULT_CONFIG = Object.freeze({
+    version: 3,
+    models: { claude: 'claude-sonnet-5-5', openai: 'gpt-6.1-sol', gemini: 'gemini-3.8-flash', groq: 'openai/gpt-oss-120b' },
+    txProvider: 'auto',
+    txModels: { groq: 'whisper-large-v3-turbo', openai: 'gpt-4o-transcribe', gemini: 'gemini-3.5-flash-lite' },
+    fallbackMissing: true,
+    fallbackOnError: false,
+    retries: 1,
+    timeoutDebateS: 90,
+    timeoutTxS: 120,
+    maxTokens: 2048,
+    rotate: true,
+    synthesis: true,
+    maxRecS: 300,
+    maxAudioMB: 24,
+    autoSend: false,
+    rememberKeys: false
+  });
+
+  // Defaults de la v2 que ya no sirven: si el usuario los tenía guardados, pasan a los nuevos.
+  const LEGACY_DEFAULT_MODELS = { gemini: ['gemini-2.5-flash'], openai: ['gpt-4o'], groq: ['llama-3.3-70b-versatile'], claude: [] };
+
+  const SEATS = [
+    {
+      id: 'gemini', name: 'Gemini', role: 'Diseño y UX', provider: 'gemini',
+      rolePrompt: 'Tu rol en la mesa: DISEÑO Y UX. Sos director creativo, diseñador de sistemas y especialista en experiencia de usuario. Mirás qué siente y entiende la persona que usa el producto, el ritmo, la claridad y lo que lo hace memorable.'
+    },
+    {
+      id: 'claude', name: 'Claude', role: 'Arquitectura', provider: 'claude',
+      rolePrompt: 'Tu rol en la mesa: ARQUITECTURA. Sos arquitecto de software senior y guardián de la simplicidad técnica. Odiás la sobreingeniería; buscás la solución más simple, barata de mantener y fácil de cambiar.'
+    },
+    {
+      id: 'chatgpt', name: 'ChatGPT', role: 'Datos y lógica', provider: 'openai',
+      rolePrompt: 'Tu rol en la mesa: DATOS Y LÓGICA. Sos especialista en algoritmos, fórmulas, estructuras de datos y reglas de negocio. Buscás casos borde donde la lógica o los números fallen, y los cuantificás.'
+    }
+  ];
+  const SYNTH_SEAT = { id: 'sintesis', name: 'Síntesis', role: 'Moderación neutral' };
+  const seatById = id => (id === 'sintesis' ? SYNTH_SEAT : SEATS.find(s => s.id === id) || null);
+
+  const DEFAULT_PROJECTS = Object.freeze([
+    {
+      id: 'gol-olimpico',
+      name: 'Gol Olímpico (Krillion Fútbol)',
+      roundIndex: 0,
+      glossary: 'Krillion, One in a Krillion, Gol Olímpico, Gol de Chilena, Gol de Cabeza, Centro al área, Gustavo Oberman, Lonie Paxton, Sasha Kaun, Pixel Art, 8-bit, Sensible Soccer, Next.js, React, Railway, Vercel',
+      context: `PROYECTO: "GOL OLÍMPICO" (Juego web diario de trivia de fútbol estilo Krillion.io).
+ESTÉTICA DEFINIDA: Pixel Art / 8-bit retro (320x190 escalado al píxel) con jugadorcitos que mueven las piernitas cuadro por cuadro. Interfaz 100% limpia de producción (cero textos técnicos en pantalla).
+LOS 4 TIERS DE RAREZA (Córner desde la derecha):
+1. Centro al Área (Blanco - Común): Despeja el defensor en el primer palo.
+2. Gol de Cabeza (Verde - Rara): Centro al punto penal y frentazo del 9.
+3. Gol de Chilena (Violeta - Épica): Cámara lenta, giro 180° en el aire haciendo tijera y remate con fuego pixelado.
+4. ¡GOL OLÍMPICO! (Dorado - Mítica / equivalente a One in a Krillion): Se oscurece el estadio, comba física que se cierra al segundo palo, pega en el poste (¡CLANK!) y entra sin que nadie la toque.
+OBJETIVO DE LA MESA: Que sacar un Gol Olímpico sea extremadamente difícil y prestigioso (doble llave: índice de oscuridad estadístico + ser de los primeros en votarlo en el día) y definir la arquitectura técnica más simple y rentable.`,
+      decisions: '',
+      draft: '',
+      messages: [{ id: 'm-bienvenida-gol', role: 'system_notice', text: 'Sala "Gol Olímpico" lista. Tocá el micrófono o escribí abajo: los tres roles debaten por turnos leyéndose entre sí.' }]
+    },
+    {
+      id: 'nuevo-brainstorm',
+      name: 'Ideas Generales / Nuevos Proyectos',
+      roundIndex: 0,
+      glossary: 'Next.js, React, Vercel, Railway, MongoDB Atlas, Mercado Libre, pago único, MVP, SaaS, micro-producto',
+      context: `PROYECTO: Incubadora de Ideas y Productos Digitales.
+REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, prototipado rápido, alto impacto visual y preferentemente modelos de pago único o mantenimiento diario casi nulo.`,
+      decisions: '',
+      draft: '',
+      messages: [{ id: 'm-bienvenida-ideas', role: 'system_notice', text: 'Sala general lista para pelotear cualquier proyecto nuevo.' }]
+    }
+  ]);
+
+  /* ---------------- Utilidades ---------------- */
+  function newId(prefix) {
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  function escapeHtml(str) {
+    return String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  // Markdown mínimo: escapa TODO primero y recién después agrega <strong>/<code>.
+  function formatLight(str) {
+    return escapeHtml(str)
+      .replace(/\*\*([^*\n][^*]*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  }
+  function nowTime() {
+    return new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+  }
+  function clampNum(v, min, max, def) {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : def;
+  }
+  function safeParse(text) {
+    try { return { ok: true, value: JSON.parse(text) }; } catch (e) { return { ok: false, error: e }; }
+  }
+  function cleanModelId(v, def) {
+    const s = typeof v === 'string' ? v.trim().replace(/^models\//, '') : '';
+    return s && s.length <= 120 && !/\s/.test(s) ? s : def;
+  }
+
+  /* ---------------- Claves (en memoria por defecto) ---------------- */
+  const Keys = {
+    mem: { claude: '', openai: '', gemini: '', groq: '' },
+    has(p) { return Boolean(this.mem[p]); },
+    any() { return PROVIDER_IDS.some(p => this.mem[p]); },
+    snapshot() { return { ...this.mem }; },
+    setAll(obj) {
+      for (const p of PROVIDER_IDS) this.mem[p] = typeof obj[p] === 'string' ? obj[p].trim() : '';
+    },
+    clearMemory() { for (const p of PROVIDER_IDS) this.mem[p] = ''; }
+  };
+
+  // Nunca mostrar claves: ni en mensajes, ni en errores, ni en exportaciones.
+  const KEY_PATTERNS = [
+    /sk-ant-[A-Za-z0-9_\-]{8,}/g,
+    /sk-[A-Za-z0-9_\-]{16,}/g,
+    /AIza[0-9A-Za-z_\-]{20,}/g,
+    /gsk_[A-Za-z0-9]{12,}/g
+  ];
+  function redact(text) {
+    let s = String(text ?? '');
+    for (const k of Object.values(Keys.mem)) {
+      if (k && k.length >= 8) s = s.split(k).join('[clave oculta]');
+    }
+    for (const re of KEY_PATTERNS) s = s.replace(re, '[clave oculta]');
+    return s;
+  }
+
+  /* ---------------- Almacenamiento protegido ---------------- */
+  function lsGet(key) {
+    try { return { ok: true, value: window.localStorage.getItem(key) }; }
+    catch (e) { return { ok: false, error: e }; }
+  }
+  function lsSet(key, value) {
+    try { window.localStorage.setItem(key, value); return { ok: true }; }
+    catch (e) { return { ok: false, error: e }; }
+  }
+  function lsRemove(key) {
+    try { window.localStorage.removeItem(key); return { ok: true }; }
+    catch (e) { return { ok: false, error: e }; }
+  }
+  function storageErrorText(e) {
+    const name = e && e.name;
+    if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') return 'el almacenamiento del navegador está lleno';
+    if (name === 'SecurityError') return 'el navegador bloquea el almacenamiento local (modo privado o cookies bloqueadas)';
+    return 'el navegador rechazó la escritura';
+  }
+
+  /* ---------------- Configuración ---------------- */
+  function sanitizeConfig(raw) {
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    if (!raw || typeof raw !== 'object') return cfg;
+    const m = raw.models && typeof raw.models === 'object' ? raw.models : {};
+    for (const p of PROVIDER_IDS) cfg.models[p] = cleanModelId(m[p], cfg.models[p]);
+    const t = raw.txModels && typeof raw.txModels === 'object' ? raw.txModels : {};
+    for (const p of TRANSCRIBE_AUTO_ORDER) cfg.txModels[p] = cleanModelId(t[p], cfg.txModels[p]);
+    if (['auto', ...TRANSCRIBE_AUTO_ORDER].includes(raw.txProvider)) cfg.txProvider = raw.txProvider;
+    for (const b of ['fallbackMissing', 'fallbackOnError', 'rotate', 'synthesis', 'autoSend', 'rememberKeys']) {
+      if (typeof raw[b] === 'boolean') cfg[b] = raw[b];
+    }
+    cfg.retries = clampNum(raw.retries, 0, 3, cfg.retries);
+    cfg.timeoutDebateS = clampNum(raw.timeoutDebateS, 10, 600, cfg.timeoutDebateS);
+    cfg.timeoutTxS = clampNum(raw.timeoutTxS, 10, 900, cfg.timeoutTxS);
+    cfg.maxTokens = clampNum(raw.maxTokens, 256, 16000, cfg.maxTokens);
+    cfg.maxRecS = clampNum(raw.maxRecS, 10, 1800, cfg.maxRecS);
+    cfg.maxAudioMB = clampNum(raw.maxAudioMB, 1, 25, cfg.maxAudioMB);
+    return cfg;
+  }
+
+  // Lee config v3; si no existe, migra models/settings de la v2. Devuelve { config, notices, needsSave }.
+  function loadConfig() {
+    const notices = [];
+    const r = lsGet(STORE.config);
+    if (r.ok && r.value) {
+      const parsed = safeParse(r.value);
+      if (parsed.ok) return { config: sanitizeConfig(parsed.value), notices, needsSave: false };
+      notices.push({ level: 'warn', text: 'Los ajustes guardados estaban dañados: volví a los valores por defecto.' });
+      return { config: structuredClone(DEFAULT_CONFIG), notices, needsSave: true };
+    }
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    let migrated = false;
+    const oldModels = lsGet(STORE.legacyModels);
+    const om = oldModels.ok && oldModels.value ? safeParse(oldModels.value) : null;
+    if (om && om.ok && om.value && typeof om.value === 'object') {
+      const replaced = [];
+      for (const p of PROVIDER_IDS) {
+        const v = cleanModelId(om.value[p], '');
+        if (!v) continue;
+        if (LEGACY_DEFAULT_MODELS[p].includes(v)) replaced.push(`${v} → ${cfg.models[p]}`);
+        else cfg.models[p] = v;
+      }
+      migrated = true;
+      if (replaced.length) notices.push({ level: 'info', text: `Actualicé modelos viejos de la v2: ${replaced.join(', ')}. Podés cambiarlos en Ajustes.` });
+    }
+    const oldSettings = lsGet(STORE.legacySettings);
+    const os = oldSettings.ok && oldSettings.value ? safeParse(oldSettings.value) : null;
+    if (os && os.ok && os.value && typeof os.value === 'object') {
+      if (typeof os.value.rotate === 'boolean') cfg.rotate = os.value.rotate;
+      if (typeof os.value.synthesis === 'boolean') cfg.synthesis = os.value.synthesis;
+      migrated = true;
+    }
+    const oldKeys = lsGet(STORE.legacyKeys);
+    const ok = oldKeys.ok && oldKeys.value ? safeParse(oldKeys.value) : null;
+    if (ok && ok.ok && ok.value && typeof ok.value.fallback === 'boolean') {
+      cfg.fallbackMissing = ok.value.fallback;
+      migrated = true;
+    }
+    return { config: cfg, notices, needsSave: migrated, migratedLegacy: migrated };
+  }
+
+  function saveConfig(cfg) {
+    const r = lsSet(STORE.config, JSON.stringify(cfg));
+    if (r.ok) { lsRemove(STORE.legacyModels); lsRemove(STORE.legacySettings); }
+    return r;
+  }
+
+  /* ---------------- Claves: migración y "recordar" ---------------- */
+  // Las claves de la v1/v2 (mesachica_keys_v1) pasan SOLO a memoria y se borra la copia vieja.
+  function migrateLegacyKeys() {
+    const r = lsGet(STORE.legacyKeys);
+    if (!r.ok || !r.value) return null;
+    const parsed = safeParse(r.value);
+    let count = 0;
+    if (parsed.ok && parsed.value && typeof parsed.value === 'object') {
+      for (const p of PROVIDER_IDS) {
+        const v = parsed.value[p];
+        if (typeof v === 'string' && v.trim()) { Keys.mem[p] = v.trim(); count++; }
+      }
+    }
+    const removed = lsRemove(STORE.legacyKeys);
+    if (!removed.ok) {
+      return { level: 'error', text: `Encontré claves de la versión anterior guardadas sin cifrar y no pude borrarlas (${storageErrorText(removed.error)}). Borrá los datos del sitio desde el navegador.` };
+    }
+    return count
+      ? { level: 'warn', text: `Encontré ${count} clave(s) de la versión anterior guardadas sin cifrar en este navegador. Las cargué solo en memoria y borré la copia vieja. Si querés que se recuerden, activá "Recordar claves" en Conexiones API.` }
+      : { level: 'info', text: 'Borré un registro de claves viejo (vacío o dañado) de la versión anterior.' };
+  }
+
+  function loadRememberedKeys(cfg) {
+    const r = lsGet(STORE.keys);
+    if (!r.ok || !r.value) return null;
+    if (!cfg.rememberKeys) { lsRemove(STORE.keys); return null; } // copia huérfana: no debería existir
+    const parsed = safeParse(r.value);
+    if (!parsed.ok || !parsed.value || typeof parsed.value !== 'object') {
+      lsRemove(STORE.keys);
+      return { level: 'warn', text: 'Las claves recordadas estaban dañadas y las borré. Cargalas de nuevo.' };
+    }
+    for (const p of PROVIDER_IDS) {
+      const v = parsed.value[p];
+      if (typeof v === 'string' && v.trim() && !Keys.mem[p]) Keys.mem[p] = v.trim();
+    }
+    return null;
+  }
+
+  // Guarda o borra la copia según "Recordar claves". Devuelve {ok, error}.
+  function persistKeys(cfg) {
+    if (!cfg.rememberKeys) return lsRemove(STORE.keys);
+    const data = {};
+    for (const p of PROVIDER_IDS) if (Keys.mem[p]) data[p] = Keys.mem[p];
+    return Object.keys(data).length ? lsSet(STORE.keys, JSON.stringify(data)) : lsRemove(STORE.keys);
+  }
+
+  function wipeAllKeys() {
+    Keys.clearMemory();
+    const a = lsRemove(STORE.keys);
+    const b = lsRemove(STORE.legacyKeys);
+    return a.ok && b.ok;
+  }
+
+  /* ---------------- Validación de salas ---------------- */
+  const MSG_ROLES = new Set(['user', 'agent', 'system_notice']);
+  const AGENT_IDS = new Set(['gemini', 'claude', 'chatgpt', 'sintesis']);
+  const LIMITS = { name: 120, context: 60000, glossary: 4000, decisions: 20000, draft: 60000, text: 120000, messages: 5000, projects: 500 };
+
+  function str(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
+
+  // Devuelve un mensaje limpio o null si no se puede recuperar. "migrated" = faltaban campos nuevos (no es daño).
+  function validateMessage(m, info) {
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
+    if (!MSG_ROLES.has(m.role) || typeof m.text !== 'string') return null;
+    if (m.role === 'agent' && !AGENT_IDS.has(m.agentId)) return null;
+    const out = { id: '', role: m.role, text: m.text.slice(0, LIMITS.text) };
+    if (typeof m.id === 'string' && m.id && m.id.length <= 80) out.id = m.id;
+    else { out.id = newId('m'); info.migrated = true; }
+    if (typeof m.time === 'string') out.time = m.time.slice(0, 40);
+    if (m.role === 'user') out.fromAudio = m.fromAudio === true;
+    if (m.role === 'agent') {
+      out.agentId = m.agentId;
+      out.emulated = m.emulated === true || m.simulated === true;
+      if (PROVIDER_IDS.includes(m.provider)) out.provider = m.provider;
+      if (typeof m.model === 'string') out.model = m.model.slice(0, 120);
+      if (typeof m.via === 'string') out.via = m.via.slice(0, 120);
+      if (m.truncated === true) out.truncated = true;
+    }
+    if (m.role === 'system_notice' && ['info', 'warn', 'error'].includes(m.level)) out.level = m.level;
+    return out;
+  }
+
+  function validateProject(p, info) {
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+    const hasName = typeof p.name === 'string' && p.name.trim();
+    if (!hasName && !Array.isArray(p.messages)) return null;
+    const out = {
+      id: typeof p.id === 'string' && p.id.trim() && p.id.length <= 80 ? p.id : '',
+      name: hasName ? p.name.trim().slice(0, LIMITS.name) : 'Sala sin nombre',
+      roundIndex: clampNum(p.roundIndex, 0, 1e6, 0),
+      context: str(p.context, LIMITS.context),
+      glossary: str(p.glossary, LIMITS.glossary),
+      decisions: str(p.decisions, LIMITS.decisions),
+      draft: str(p.draft, LIMITS.draft),
+      messages: []
+    };
+    if (!out.id) { out.id = newId('proj'); info.issues.push(`Sala "${out.name}" sin id: le asigné uno nuevo.`); }
+    if (!hasName) info.issues.push('Una sala no tenía nombre válido.');
+    if (p.messages !== undefined && !Array.isArray(p.messages)) info.issues.push(`Sala "${out.name}": la lista de mensajes estaba dañada.`);
+    const msgs = Array.isArray(p.messages) ? p.messages.slice(-LIMITS.messages) : [];
+    const seen = new Set();
+    let dropped = 0;
+    for (const raw of msgs) {
+      const m = validateMessage(raw, info);
+      if (!m) { dropped++; continue; }
+      if (seen.has(m.id)) { m.id = newId('m'); info.issues.push(`Sala "${out.name}": id de mensaje repetido, renumerado.`); }
+      seen.add(m.id);
+      out.messages.push(m);
+    }
+    if (dropped) info.issues.push(`Sala "${out.name}": descarté ${dropped} mensaje(s) inválido(s).`);
+    if (typeof p.decisions !== 'string' || typeof p.draft !== 'string') info.migrated = true;
+    return out;
+  }
+
+  // Valida una lista de salas. issues = daño real (se recuperó lo válido); migrated = solo faltaban campos nuevos.
+  function validateProjects(data) {
+    const info = { issues: [], migrated: false };
+    if (!Array.isArray(data)) return { projects: [], issues: ['El contenido no es una lista de salas.'], migrated: false, fatal: true };
+    const ids = new Set();
+    const projects = [];
+    let dropped = 0;
+    for (const raw of data.slice(0, LIMITS.projects)) {
+      const p = validateProject(raw, info);
+      if (!p) { dropped++; continue; }
+      if (ids.has(p.id)) { info.issues.push(`Id de sala repetido ("${p.id}"): le asigné uno nuevo.`); p.id = newId('proj'); }
+      ids.add(p.id);
+      projects.push(p);
+    }
+    if (dropped) info.issues.push(`Descarté ${dropped} sala(s) que no se podían leer.`);
+    if (data.length > LIMITS.projects) info.issues.push(`Había más de ${LIMITS.projects} salas: importé las primeras.`);
+    return { projects, issues: info.issues, migrated: info.migrated, fatal: false };
+  }
+
+  function defaultProjects() { return structuredClone(DEFAULT_PROJECTS); }
+
+  /* ---------------- Persistencia de salas ---------------- */
+  const Persist = {
+    lockWrites: false,   // datos dañados sin copia de respaldo: no pisar
+    rawOriginal: null,   // texto original dañado (para descargar)
+    blocked: false,      // el navegador no permite leer el storage
+    lastError: null
+  };
+
+  function loadProjects() {
+    const notices = [];
+    const r = lsGet(STORE.projects);
+    if (!r.ok) {
+      Persist.blocked = true;
+      notices.push({ level: 'error', text: `No puedo leer el almacenamiento local (${storageErrorText(r.error)}). Uso las salas por defecto y todo queda solo en memoria.` });
+      return { projects: defaultProjects(), currentId: null, notices, needsSave: false };
+    }
+    const cur = lsGet(STORE.current);
+    const currentId = cur.ok && typeof cur.value === 'string' ? cur.value : null;
+    if (r.value == null) return { projects: defaultProjects(), currentId, notices, needsSave: true };
+
+    const parsed = safeParse(r.value);
+    const v = parsed.ok ? validateProjects(parsed.value) : { projects: [], issues: ['El JSON guardado no se puede leer.'], fatal: true };
+    const damaged = !parsed.ok || v.fatal || v.issues.length > 0;
+    if (!damaged) {
+      if (!v.projects.length) return { projects: defaultProjects(), currentId, notices, needsSave: true };
+      return { projects: v.projects, currentId, notices, needsSave: v.migrated };
+    }
+
+    // Hay daño: primero guardar copia del original; si no se puede, no escribir encima.
+    const recovered = v.projects.length ? v.projects : defaultProjects();
+    const backupKey = STORE.backupPrefix + new Date().toISOString().replace(/[:.]/g, '-');
+    const b = lsSet(backupKey, r.value);
+    const summary = v.projects.length ? `Recuperé ${v.projects.length} sala(s) válidas.` : 'No pude recuperar ninguna sala: cargué las salas por defecto.';
+    if (b.ok) {
+      notices.push({ level: 'warn', text: `Encontré datos de salas dañados. ${summary} Guardé una copia del original en "${backupKey}".\n${v.issues.slice(0, 4).join('\n')}` });
+      return { projects: recovered, currentId, notices, needsSave: true };
+    }
+    Persist.lockWrites = true;
+    Persist.rawOriginal = r.value;
+    notices.push({ level: 'error', text: `Encontré datos de salas dañados y no pude guardar una copia (${storageErrorText(b.error)}). ${summary} Para no perder nada, NO voy a escribir encima: trabajás en memoria. Descargá el original desde el aviso rojo.` });
+    return { projects: recovered, currentId, notices, needsSave: false };
+  }
+
+  // Nunca lanza: devuelve {ok, locked?, error?}. Un fallo acá nunca debe repetir una llamada API.
+  function saveProjects(projects, currentId) {
+    if (Persist.lockWrites) return { ok: false, locked: true };
+    let json;
+    try { json = JSON.stringify(projects); }
+    catch (e) { Persist.lastError = e; return { ok: false, error: e }; }
+    const r = lsSet(STORE.projects, json);
+    if (r.ok) lsSet(STORE.current, currentId || '');
+    Persist.lastError = r.ok ? null : r.error;
+    return r;
+  }
+
+  /* ---------------- Errores ---------------- */
+  class ApiError extends Error {
+    constructor(kind, message, extra = {}) {
+      super(redact(message));
+      this.name = 'ApiError';
+      this.kind = kind;            // cancelled|timeout|network|auth|invalid|rate|provider|empty|blocked|missing_key|too_large|unsupported
+      this.provider = extra.provider || null;
+      this.status = extra.status || 0;
+      this.retryAfter = extra.retryAfter ?? null;
+      this.detail = extra.detail ? redact(String(extra.detail)).slice(0, 300) : '';
+      this.noRetry = Boolean(extra.noRetry);
+      this.timeoutS = extra.timeoutS || 0;
+      this.failures = extra.failures || null;
+    }
+  }
+
+  const ERROR_TEXT = {
+    cancelled: () => 'Cancelado.',
+    timeout: e => `Sin respuesta a tiempo (timeout de ${e.timeoutS || '?'} s). Podés subirlo en Ajustes.`,
+    network: () => 'No se pudo conectar: sin internet, bloqueo CORS o el proveedor no acepta llamadas directas desde el navegador.',
+    auth: e => `Clave rechazada (${e.status}). Revisala en Conexiones API (o los permisos/crédito de esa cuenta).`,
+    invalid: e => `Pedido inválido (${e.status}): suele ser un ID de modelo inexistente o no habilitado para tu cuenta. Revisalo en Ajustes.`,
+    rate: e => e.retryAfter != null && e.retryAfter > MAX_RETRY_AFTER_S
+      ? `Límite de uso (429): el proveedor pide esperar ${Math.ceil(e.retryAfter)} s. No espero en silencio: corté este intento. Probá más tarde.`
+      : (e.noRetry ? 'Sin cuota o crédito disponible (429). Revisá la facturación de esa cuenta.' : 'Límite de uso alcanzado (429). Esperá un poco y probá de nuevo.'),
+    provider: e => `Error del proveedor (${e.status || 'respuesta inválida'}). Suele ser temporal.`,
+    empty: () => 'El proveedor respondió vacío.',
+    blocked: () => 'El proveedor bloqueó o rechazó la respuesta (filtro de seguridad o negativa).',
+    missing_key: () => 'Falta la clave. Cargala en Conexiones API o activá "Usar otro proveedor si falta la clave" en Ajustes.',
+    too_large: () => 'El archivo supera el límite del proveedor.',
+    unsupported: () => 'Formato o función no soportada.'
+  };
+
+  function describeError(err) {
+    if (!(err instanceof ApiError)) return redact(err && err.message ? err.message : String(err));
+    const who = err.provider ? `${PROVIDER_LABEL[err.provider]}: ` : '';
+    const base = (ERROR_TEXT[err.kind] || (() => err.message))(err);
+    const extra = err.detail && !['cancelled', 'timeout', 'network'].includes(err.kind) ? ` — «${err.detail}»` : '';
+    const own = ['missing_key', 'too_large', 'unsupported', 'empty'].includes(err.kind) && err.message && err.message !== base ? ` ${err.message}` : '';
+    return redact(`${who}${base}${own}${extra}`);
+  }
+
+  function providerMessage(data) {
+    if (!data || typeof data !== 'object') return '';
+    const e = data.error;
+    if (typeof e === 'string') return e;
+    if (e && typeof e.message === 'string') return e.message;
+    if (typeof data.message === 'string') return data.message;
+    return '';
+  }
+
+  function parseRetryAfter(header, data) {
+    if (header) {
+      const n = Number(header);
+      if (Number.isFinite(n)) return Math.max(0, n);
+      const t = Date.parse(header);
+      if (!Number.isNaN(t)) return Math.max(0, (t - Date.now()) / 1000);
+    }
+    // Gemini informa RetryInfo dentro del cuerpo.
+    const details = data && data.error && Array.isArray(data.error.details) ? data.error.details : [];
+    for (const d of details) {
+      if (d && typeof d.retryDelay === 'string') {
+        const s = parseFloat(d.retryDelay);
+        if (Number.isFinite(s)) return s;
+      }
+    }
+    return null;
+  }
+
+  function httpError(provider, res, data, text) {
+    const s = res.status;
+    const kind = s === 401 || s === 403 ? 'auth'
+      : s === 429 ? 'rate'
+      : s >= 500 ? 'provider'
+      : s === 413 ? 'too_large'
+      : 'invalid';
+    const code = data && data.error && typeof data.error === 'object' ? (data.error.code || data.error.type || '') : '';
+    const noRetry = kind === 'rate' && /insufficient_quota|billing/i.test(String(code) + ' ' + providerMessage(data));
+    const detail = providerMessage(data) || (text || '').slice(0, 200);
+    return new ApiError(kind, `HTTP ${s}`, { provider, status: s, retryAfter: parseRetryAfter(res.headers.get('retry-after'), data), detail, noRetry });
+  }
+
+  /* ---------------- Red: timeout + cancelación ---------------- */
+  // Une la señal de la operación (Frenar) con un timeout propio de este pedido.
+  function linkSignal(parent, timeoutMs) {
+    const ctrl = new AbortController();
+    let timedOut = false;
+    const onAbort = () => ctrl.abort();
+    if (parent) {
+      if (parent.aborted) ctrl.abort();
+      else parent.addEventListener('abort', onAbort, { once: true });
+    }
+    const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs) : null;
+    return {
+      signal: ctrl.signal,
+      timedOut: () => timedOut,
+      dispose() { if (timer) clearTimeout(timer); if (parent) parent.removeEventListener('abort', onAbort); }
+    };
+  }
+
+  function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) { reject(new ApiError('cancelled', 'Cancelado')); return; }
+      const onAbort = () => { clearTimeout(t); reject(new ApiError('cancelled', 'Cancelado')); };
+      const t = setTimeout(() => { if (signal) signal.removeEventListener('abort', onAbort); resolve(); }, ms);
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  async function httpJson(provider, url, init, { signal, timeoutMs }) {
+    const link = linkSignal(signal, timeoutMs);
+    const asAbort = () => link.timedOut()
+      ? new ApiError('timeout', 'Timeout', { provider, timeoutS: Math.round(timeoutMs / 1000) })
+      : new ApiError('cancelled', 'Cancelado', { provider });
+    try {
+      let res, text;
+      try {
+        res = await fetch(url, { ...init, signal: link.signal, credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' });
+        text = await res.text(); // el timeout cubre también la lectura del cuerpo
+      } catch (e) {
+        if (link.signal.aborted) throw asAbort();
+        throw new ApiError('network', 'Error de red', { provider });
+      }
+      const parsed = text ? safeParse(text) : { ok: false };
+      const data = parsed.ok ? parsed.value : null;
+      if (!res.ok) throw httpError(provider, res, data, text);
+      if (!data || typeof data !== 'object') throw new ApiError('provider', 'Respuesta que no es JSON', { provider, status: res.status });
+      return data;
+    } finally {
+      link.dispose();
+    }
+  }
+
+  // Reintenta solo 429/5xx. Retry-After > 10 s: no espera, corta y avisa.
+  async function withRetries(fn, { retries, signal, onWait }) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        const retryable = e instanceof ApiError && (e.kind === 'rate' || e.kind === 'provider') && !e.noRetry;
+        if (!retryable) throw e;
+        if (e.retryAfter != null && e.retryAfter > MAX_RETRY_AFTER_S) throw e;
+        if (attempt >= retries) throw e;
+        const waitS = e.retryAfter != null ? Math.max(0.5, e.retryAfter) : Math.min(8, 1.5 * 2 ** attempt);
+        if (onWait) onWait({ provider: e.provider, waitS, attempt: attempt + 1, of: retries, error: e });
+        await sleep(waitS * 1000, signal);
+      }
+    }
+  }
+
+  /* ---------------- Adaptadores de chat ---------------- */
+  // Todos devuelven { text, truncated } o lanzan ApiError (empty/blocked/...).
+  const CHAT = {
+    async claude(o) {
+      const data = await httpJson('claude', 'https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': o.key,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({ model: o.model, max_tokens: o.maxTokens, system: o.system, messages: [{ role: 'user', content: o.user }] })
+      }, o);
+      const blocks = Array.isArray(data.content) ? data.content : [];
+      const text = blocks.filter(b => b && b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('').trim();
+      if (data.stop_reason === 'refusal' && !text) throw new ApiError('blocked', 'Rechazado', { provider: 'claude' });
+      if (!text) throw new ApiError('empty', '', { provider: 'claude' });
+      return { text, truncated: data.stop_reason === 'max_tokens' };
+    },
+
+    async openai(o) {
+      // Responses API: instructions + input + max_output_tokens.
+      const data = await httpJson('openai', 'https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${o.key}` },
+        body: JSON.stringify({ model: o.model, instructions: o.system, input: o.user, max_output_tokens: o.maxTokens, store: false })
+      }, o);
+      if (data.status === 'failed') {
+        throw new ApiError('provider', 'Falló', { provider: 'openai', detail: providerMessage(data) });
+      }
+      let text = '', refusal = '';
+      for (const item of Array.isArray(data.output) ? data.output : []) {
+        for (const c of item && Array.isArray(item.content) ? item.content : []) {
+          if (c && c.type === 'output_text' && typeof c.text === 'string') text += c.text;
+          else if (c && c.type === 'refusal' && typeof c.refusal === 'string') refusal += c.refusal;
+        }
+      }
+      text = text.trim();
+      const reason = data.incomplete_details && data.incomplete_details.reason;
+      if (!text && (refusal || reason === 'content_filter')) throw new ApiError('blocked', 'Rechazado', { provider: 'openai', detail: refusal });
+      if (!text && data.status === 'incomplete') {
+        throw new ApiError('empty', 'Se cortó antes de escribir (posiblemente agotó el máximo de tokens razonando: subilo en Ajustes).', { provider: 'openai' });
+      }
+      if (!text) throw new ApiError('empty', '', { provider: 'openai' });
+      return { text, truncated: data.status === 'incomplete' };
+    },
+
+    async gemini(o) {
+      const data = await geminiGenerate(o.key, o.model, {
+        systemInstruction: { parts: [{ text: o.system }] },
+        contents: [{ role: 'user', parts: [{ text: o.user }] }],
+        generationConfig: { maxOutputTokens: o.maxTokens }
+      }, o);
+      return parseGemini(data);
+    },
+
+    async groq(o) {
+      const data = await httpJson('groq', 'https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${o.key}` },
+        body: JSON.stringify({
+          model: o.model,
+          max_completion_tokens: o.maxTokens,
+          messages: [{ role: 'system', content: o.system }, { role: 'user', content: o.user }]
+        })
+      }, o);
+      const choice = Array.isArray(data.choices) ? data.choices[0] : null;
+      const text = choice && choice.message && typeof choice.message.content === 'string' ? choice.message.content.trim() : '';
+      if (!text && choice && choice.finish_reason === 'content_filter') throw new ApiError('blocked', 'Rechazado', { provider: 'groq' });
+      if (!text) throw new ApiError('empty', '', { provider: 'groq' });
+      return { text, truncated: choice.finish_reason === 'length' };
+    }
+  };
+
+  // Gemini: la clave va en el header x-goog-api-key, nunca en la URL.
+  function geminiGenerate(key, model, body, o) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    return httpJson('gemini', url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify(body)
+    }, o);
+  }
+
+  const GEMINI_BLOCK_REASONS = new Set(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY', 'LANGUAGE']);
+  function parseGemini(data) {
+    const block = data.promptFeedback && data.promptFeedback.blockReason;
+    if (block) throw new ApiError('blocked', 'Bloqueado', { provider: 'gemini', detail: block });
+    const cand = Array.isArray(data.candidates) ? data.candidates[0] : null;
+    const parts = cand && cand.content && Array.isArray(cand.content.parts) ? cand.content.parts : [];
+    const text = parts.filter(p => p && typeof p.text === 'string' && !p.thought).map(p => p.text).join('').trim();
+    const reason = cand && cand.finishReason;
+    if (!text && GEMINI_BLOCK_REASONS.has(reason)) throw new ApiError('blocked', 'Bloqueado', { provider: 'gemini', detail: reason });
+    if (!text && reason === 'MAX_TOKENS') {
+      throw new ApiError('empty', 'Se cortó antes de escribir (posiblemente agotó el máximo de tokens razonando: subilo en Ajustes).', { provider: 'gemini' });
+    }
+    if (!text) throw new ApiError('empty', '', { provider: 'gemini', detail: reason || '' });
+    return { text, truncated: reason === 'MAX_TOKENS' };
+  }
+
+  /* ---------------- Respaldo entre proveedores ---------------- */
+  /*
+    native: proveedor propio del rol (para la síntesis: el primero con clave del orden de respaldo).
+    snap: { keys, cfg } capturados al arrancar la operación.
+    Reglas: si falta la clave del nativo → solo sigue si cfg.fallbackMissing.
+            si una llamada falla        → solo sigue si cfg.fallbackOnError.
+            nunca se repite un proveedor dentro del mismo turno.
+  */
+  async function callWithFallback({ native, snap, system, user, signal, onAttempt, onWait }) {
+    const { keys, cfg } = snap;
+    const chain = [native, ...FALLBACK_ORDER.filter(p => p !== native)];
+    const tried = new Set();
+    const failures = [];
+    let reason = null; // 'missing' | 'error'
+    for (const p of chain) {
+      if (tried.has(p)) continue;
+      if (!keys[p]) {
+        if (p === native) {
+          if (!cfg.fallbackMissing) throw new ApiError('missing_key', `Falta la clave de ${PROVIDER_LABEL[p]}.`, { provider: p });
+          reason = 'missing';
+        }
+        continue;
+      }
+      if (p !== native && reason === 'error' && !cfg.fallbackOnError) break;
+      tried.add(p);
+      const model = cfg.models[p];
+      if (onAttempt) onAttempt({ provider: p, model, emulated: p !== native });
+      try {
+        const r = await withRetries(
+          () => CHAT[p]({ key: keys[p], model, system, user, maxTokens: cfg.maxTokens, signal, timeoutMs: cfg.timeoutDebateS * 1000 }),
+          { retries: cfg.retries, signal, onWait }
+        );
+        return { ...r, provider: p, model, emulated: p !== native, failures };
+      } catch (e) {
+        if (e instanceof ApiError && e.kind === 'cancelled') throw e;
+        if (signal && signal.aborted) throw new ApiError('cancelled', 'Cancelado');
+        failures.push(e);
+        reason = 'error';
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new ApiError(failures[failures.length - 1].kind, 'Fallaron todos los proveedores intentados', { failures });
+    }
+    throw new ApiError('missing_key', reason === 'missing'
+      ? `Falta la clave de ${PROVIDER_LABEL[native]} y no hay otra clave cargada para el respaldo.`
+      : 'No hay ninguna clave cargada.', { provider: native });
+  }
+
+  function describeFailure(err) {
+    if (err instanceof ApiError && err.failures && err.failures.length) {
+      return err.failures.map(describeError).join('\n');
+    }
+    return describeError(err);
+  }
+
+  /* ---------------- Transcripción ---------------- */
+  const AUDIO_EXT = {
+    'audio/webm': 'webm', 'video/webm': 'webm',
+    'audio/mp4': 'm4a', 'video/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/m4a': 'm4a',
+    'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3',
+    'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/flac': 'flac'
+  };
+  const WHISPER_EXTS = new Set(['flac', 'mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'ogg', 'wav', 'webm']);
+  const RECORDER_MIMES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'];
+  const PROVIDER_AUDIO_MB = { groq: 25, openai: 25, gemini: 14 }; // Gemini: ~20 MB por pedido incluyendo base64 (+33 %)
+
+  function audioSupport() {
+    const hasGUM = Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function');
+    const hasMR = typeof window.MediaRecorder === 'function';
+    return { ok: hasGUM && hasMR && window.isSecureContext !== false, hasGUM, hasMR, secure: window.isSecureContext !== false };
+  }
+
+  function pickRecorderMime() {
+    if (typeof window.MediaRecorder !== 'function' || typeof MediaRecorder.isTypeSupported !== 'function') return '';
+    return RECORDER_MIMES.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || '';
+  }
+
+  // El nombre de archivo tiene que coincidir con el contenedor real (audio/mp4 → .m4a).
+  function audioFileInfo(mime) {
+    const base = String(mime || '').split(';')[0].trim().toLowerCase();
+    const ext = AUDIO_EXT[base] || '';
+    return { base: base || 'audio/webm', ext, filename: ext ? `audio.${ext}` : 'audio.webm' };
+  }
+
+  function resolveTranscriber(cfg, keys) {
+    const order = cfg.txProvider === 'auto' ? TRANSCRIBE_AUTO_ORDER : [cfg.txProvider];
+    return order.find(p => keys[p]) || null;
+  }
+
+  // Groq admite ~224 tokens de prompt: recorto el glosario a ~480 caracteres, cortando en una coma.
+  function whisperPrompt(glossary) {
+    const g = String(glossary || '').replace(/\s+/g, ' ').trim();
+    const head = 'Español rioplatense.';
+    if (!g) return head;
+    let list = g.length > 480 ? g.slice(0, 480) : g;
+    if (g.length > 480 && list.includes(',')) list = list.slice(0, list.lastIndexOf(','));
+    return `${head} Términos: ${list}.`;
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+      reader.onerror = () => reject(new ApiError('unsupported', 'No pude leer el audio grabado.'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function transcribeAudio({ provider, key, model, blob, glossary, signal, timeoutMs, retries, onWait }) {
+    const info = audioFileInfo(blob.type);
+    const limitMB = PROVIDER_AUDIO_MB[provider];
+    if (blob.size > limitMB * 1024 * 1024) {
+      throw new ApiError('too_large', `El audio pesa ${(blob.size / 1048576).toFixed(1)} MB y ${PROVIDER_LABEL[provider]} acepta hasta ~${limitMB} MB.`, { provider });
+    }
+    const clean = new Blob([blob], { type: info.base });
+    const opts = { signal, timeoutMs };
+
+    if (provider === 'gemini') {
+      const data64 = await blobToBase64(clean);
+      const prompt = 'Transcribí este audio en español rioplatense tal como se dijo. No respondas al contenido ni agregues comentarios: devolvé solo la transcripción, con puntuación.'
+        + (glossary ? ` Si una palabra suena parecida a alguna de este glosario, usá esa grafía: ${glossary}` : '');
+      const data = await withRetries(() => geminiGenerate(key, model, {
+        contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType: info.base, data: data64 } }] }]
+      }, opts), { retries, signal, onWait });
+      return parseGemini(data).text;
+    }
+
+    if (!WHISPER_EXTS.has(info.ext)) {
+      throw new ApiError('unsupported', `Formato ${info.base} no aceptado por ${PROVIDER_LABEL[provider]}.`, { provider });
+    }
+    const url = provider === 'groq' ? 'https://api.groq.com/openai/v1/audio/transcriptions' : 'https://api.openai.com/v1/audio/transcriptions';
+    const fd = new FormData();
+    fd.append('file', clean, info.filename);
+    fd.append('model', model);
+    fd.append('language', 'es');
+    fd.append('prompt', whisperPrompt(glossary));
+    fd.append('response_format', 'json');
+    const data = await withRetries(() => httpJson(provider, url, {
+      method: 'POST', headers: { authorization: `Bearer ${key}` }, body: fd
+    }, opts), { retries, signal, onWait });
+    const text = typeof data.text === 'string' ? data.text.trim() : '';
+    if (!text) throw new ApiError('empty', 'No se reconoció voz en el audio.', { provider });
+    return text;
+  }
+  </script>
 <!--BLOQUE3-->
 </body>
 </html>
