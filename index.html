@@ -1444,6 +1444,1071 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
     return text;
   }
   </script>
-<!--BLOQUE3-->
+  <!-- ================= BLOQUE 3: INTERFAZ ================= -->
+  <script>
+  'use strict';
+  /* Debate, grabación/transcripción, diálogos, importar/exportar. Usa el núcleo (bloque 2). */
+
+  const $ = id => document.getElementById(id);
+  const isTouch = window.matchMedia('(pointer: coarse)').matches;
+
+  const App = {
+    projects: [],
+    currentId: null,
+    config: null,
+    opSeq: 0,
+    debate: null,                 // { id, projectId, kind, ctrl, startedAt, status }
+    draftAudio: new Set(),        // salas cuyo borrador viene (en parte) de un audio
+    importCandidate: null,
+    audio: { state: 'idle', session: null, tx: null, pending: null }
+  };
+  const Rec = App.audio;
+
+  /* ---------------- Utilidades de interfaz ---------------- */
+  const getProject = id => App.projects.find(p => p.id === id) || null;
+  const current = () => getProject(App.currentId) || App.projects[0];
+  const fmtClock = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  const fileSafe = s => String(s || '').replace(/[^\w\-áéíóúñü ]/gi, '').trim().replace(/\s+/g, '-').slice(0, 60) || 'mesa-chica';
+  const dateStamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+
+  function el(tag, attrs = {}, children = []) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v == null || v === false) continue;
+      if (k === 'class') n.className = v;
+      else if (k === 'text') n.textContent = v;
+      else if (k === 'html') n.innerHTML = v; // solo con contenido ya escapado
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+      else n.setAttribute(k, v === true ? '' : v);
+    }
+    for (const c of [].concat(children)) if (c != null) n.append(c);
+    return n;
+  }
+
+  function announce(text) {
+    const r = $('srStatus');
+    r.textContent = '';
+    requestAnimationFrame(() => { r.textContent = redact(text); });
+  }
+
+  function toast(text, { level = 'info', timeout } = {}) {
+    const box = $('toasts');
+    while (box.children.length >= 4) box.firstElementChild.remove();
+    const t = el('div', { class: `toast ${level}`, role: level === 'error' ? 'alert' : 'status' }, [
+      el('span', { class: 't', text: redact(text) }),
+      el('button', { type: 'button', 'aria-label': 'Cerrar aviso', text: '✕', onclick: () => t.remove() })
+    ]);
+    box.append(t);
+    const ms = timeout ?? (level === 'error' ? 0 : level === 'warn' ? 9000 : 4500);
+    if (ms) setTimeout(() => t.remove(), ms);
+    return t;
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: filename });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  /* ---------------- Guardado ---------------- */
+  let saveTimer = null;
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(persistNow, 500);
+  }
+
+  // Nunca lanza ni reintenta nada de red: si falla, aviso persistente y seguimos en memoria.
+  function persistNow() {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    if (Persist.blocked) { showStorageWarning('blocked'); return false; }
+    const r = saveProjects(App.projects, App.currentId);
+    if (r.ok) { hideStorageWarning(); return true; }
+    showStorageWarning(r.locked ? 'locked' : 'failed', r.error);
+    return false;
+  }
+
+  function showStorageWarning(kind, err) {
+    const texts = {
+      blocked: 'El navegador bloquea el almacenamiento local: nada de lo que hagas se guarda al cerrar. Exportá un JSON para no perderlo.',
+      locked: 'Los datos de salas guardados estaban dañados y no pude hacer una copia: no escribo encima. Trabajás en memoria. Descargá el original antes de decidir.',
+      failed: `No se pudo guardar en este navegador (${storageErrorText(err)}). Tu trabajo sigue en memoria: exportá un JSON antes de cerrar la pestaña.`
+    };
+    $('storageWarningText').textContent = texts[kind];
+    $('storageWarning').hidden = false;
+    $('btnWarnRaw').hidden = kind !== 'locked';
+    $('btnWarnForce').hidden = kind !== 'locked';
+  }
+  function hideStorageWarning() { $('storageWarning').hidden = true; }
+
+  /* ---------------- Render del chat ---------------- */
+  function seatClass(agentId) { return `seat-${agentId}`; }
+
+  function createMsgEl(m) {
+    if (m.role === 'system_notice') {
+      return el('div', { class: `msg notice${m.level ? ' ' + m.level : ''}`, 'data-id': m.id, text: m.text });
+    }
+    if (m.role === 'user') {
+      return el('article', { class: 'msg bubble-user', 'data-id': m.id, 'aria-label': 'Tu mensaje' }, [
+        el('div', { class: 'msg-head' }, [
+          el('span', { class: 'who', text: m.fromAudio ? 'Vos · audio' : 'Vos' }),
+          el('span', { class: 'time', text: m.time || '' })
+        ]),
+        el('div', { class: 'msg-body', html: formatLight(m.text) })
+      ]);
+    }
+    const seat = seatById(m.agentId) || SEATS[0];
+    const isSynth = m.agentId === 'sintesis';
+    const real = m.provider ? `${PROVIDER_LABEL[m.provider]} · ${m.model || ''}` : (m.via || '');
+    const who = isSynth ? 'Síntesis' : (m.emulated ? seat.role : seat.name);
+    const roleText = isSynth ? seat.role : (m.emulated ? `en lugar de ${seat.name}` : seat.role);
+    const head = el('div', { class: 'msg-who' }, [
+      el('span', { class: 'who', text: who }),
+      m.emulated ? el('span', { class: 'tag emu', text: 'EMULADO', title: 'Este rol lo respondió otro proveedor (respaldo).' }) : null,
+      m.truncated ? el('span', { class: 'tag trunc', text: 'TRUNCADA', title: 'La respuesta se cortó por el máximo de tokens.' }) : null,
+      el('span', { class: 'role', text: roleText })
+    ]);
+    const label = `${isSynth ? 'Síntesis' : seat.role}${m.emulated ? ', emulado por ' + real : ''}`;
+    return el('article', { class: `msg bubble-agent ${seatClass(m.agentId)}`, 'data-id': m.id, 'aria-label': label }, [
+      el('div', { class: 'msg-head' }, [head, el('span', { class: 'via', text: real })]),
+      el('div', { class: 'msg-body', html: formatLight(m.text) })
+    ]);
+  }
+
+  const chat = $('chat');
+  const nearBottom = () => chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
+  function scrollToBottom() { chat.scrollTop = chat.scrollHeight; $('btnNewMsgs').hidden = true; }
+
+  function renderRoom() {
+    const p = current();
+    $('roomTitle').textContent = p.name;
+    chat.replaceChildren(...p.messages.map(createMsgEl));
+    const txt = $('txtInput');
+    txt.value = p.draft || '';
+    autosize();
+    renderBadges();
+    updateControls();
+    scrollToBottom();
+  }
+
+  // Agrega un mensaje a la sala indicada y lo pinta solo si esa sala está abierta.
+  function appendMessage(projectId, msg) {
+    const p = getProject(projectId);
+    if (!p) return null;
+    const m = { id: newId('m'), time: nowTime(), ...msg };
+    if (m.role !== 'user') m.text = redact(m.text);
+    p.messages.push(m);
+    persistNow();
+    if (projectId === App.currentId) {
+      const stick = nearBottom();
+      chat.append(createMsgEl(m));
+      if (stick) scrollToBottom(); else $('btnNewMsgs').hidden = false;
+      updateControls();
+    }
+    return m;
+  }
+
+  function roundOrder(p, cfg) {
+    if (!cfg.rotate) return SEATS.slice();
+    const s = (p.roundIndex || 0) % SEATS.length;
+    return SEATS.slice(s).concat(SEATS.slice(0, s));
+  }
+
+  function renderBadges() {
+    const p = current();
+    const op = App.debate && App.debate.projectId === p.id ? App.debate : null;
+    const order = op ? op.order : roundOrder(p, App.config);
+    const synth = op ? op.synth : App.config.synthesis;
+    const box = $('badges');
+    const items = [el('span', { class: 'lbl', text: op ? 'Ronda:' : 'Próxima:' })];
+    order.forEach((s, i) => {
+      if (i) items.push(el('span', { class: 'arrow', 'aria-hidden': 'true', text: '→' }));
+      items.push(el('span', { class: `badge ${seatClass(s.id)}${op && op.activeSeat === s.id ? ' active' : ''}`, title: s.role, 'aria-label': `${i + 1}: ${s.name}, ${s.role}` }, [
+        el('span', { class: 'bdot', 'aria-hidden': 'true' }), `${i + 1}. ${s.name}`
+      ]));
+    });
+    if (synth) {
+      if (order.length) items.push(el('span', { class: 'arrow', 'aria-hidden': 'true', text: '→' }));
+      items.push(el('span', { class: `badge seat-sintesis${op && op.activeSeat === 'sintesis' ? ' active' : ''}`, text: 'Síntesis' }));
+    }
+    box.replaceChildren(...items);
+  }
+
+  function updateControls() {
+    const p = current();
+    const started = p.messages.some(m => m.role === 'user');
+    const busy = Boolean(App.debate);
+    for (const id of ['btnMore', 'btnSynth']) {
+      const b = $(id);
+      b.disabled = !started || busy;
+      b.title = !started ? 'Primero mandá un mensaje en esta sala' : busy ? 'Hay una ronda en curso' : '';
+    }
+    $('btnSend').disabled = busy;
+    $('btnSend').title = busy ? 'Hay una ronda en curso: esperá o frenala' : '';
+    $('keyDot').classList.toggle('ok', Keys.any());
+  }
+
+  function autosize() {
+    const t = $('txtInput');
+    t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight + 2, window.innerHeight * 0.32) + 'px';
+  }
+
+  /* ---------------- Operación en curso (barra) ---------------- */
+  let opTicker = null;
+  function showOpBar(op) {
+    $('opBar').hidden = false;
+    clearInterval(opTicker);
+    const tick = () => { $('opTimer').textContent = fmtClock((Date.now() - op.startedAt) / 1000); };
+    tick();
+    opTicker = setInterval(tick, 1000);
+  }
+  function setOpStatus(op, text) {
+    if (App.debate !== op) return;
+    const p = getProject(op.projectId);
+    $('opText').textContent = `«${p ? p.name : '?'}» · ${text}`;
+  }
+  function hideOpBar() {
+    clearInterval(opTicker);
+    $('opBar').hidden = true;
+  }
+
+  /* ---------------- Prompts ---------------- */
+  function speakerLabel(m) {
+    if (m.role === 'user') return 'USUARIO (decide)';
+    if (m.agentId === 'sintesis') return 'SÍNTESIS DEL MODERADOR';
+    const s = seatById(m.agentId) || SEATS[0];
+    return m.emulated
+      ? `${s.role.toUpperCase()} (rol emulado por ${m.provider ? PROVIDER_LABEL[m.provider] : 'otro modelo'})`
+      : `${s.name.toUpperCase()} – ${s.role}`;
+  }
+  function transcriptText(history) {
+    const last = history.slice(-HISTORY_LIMIT);
+    return last.length ? last.map(m => `[${speakerLabel(m)}]: ${m.text}`).join('\n\n') : '(todavía no hay mensajes)';
+  }
+  function roomBlock(room) {
+    return `CONTEXTO DEL PROYECTO:\n${room.context.trim() || '(sin contexto cargado)'}\n\nDECISIONES VIGENTES (base acordada por el usuario; si proponés cambiar alguna, decilo explícitamente y por qué):\n${room.decisions.trim() || '(ninguna todavía)'}`;
+  }
+
+  function seatPrompt(seat, room, history, closeRound) {
+    const others = SEATS.filter(s => s !== seat).map(s => s.role).join(' y ');
+    const system = `${seat.rolePrompt}
+Participás en una mesa de debate por turnos con otros dos roles (${others}) y el usuario, que es quien decide. Hablás en español rioplatense, natural y directo.
+
+${roomBlock(room)}
+
+REGLAS:
+1. Leé el historial, incluidos los turnos anteriores de esta ronda, y respondé al hilo.
+2. Aportá algo que solo tu rol puede aportar; no repitas lo que ya se dijo.
+3. Si coincidís con alguien, decilo en una línea con el motivo y seguí con tu aporte. No tenés obligación de contradecir ni de inventar desacuerdos.
+4. No podés navegar ni verificar fuentes. Si mencionás datos externos (precios, versiones, estadísticas, productos), marcalos "(a verificar)".
+5. Máximo 170 palabras: se lee en el celular.
+6. Hacé una pregunta al usuario solo si hay una decisión real que tenga que tomar; si no, no cierres con pregunta.
+7. No empieces con tu nombre: la interfaz ya lo muestra.${closeRound ? `
+8. Sos el último turno y no hay síntesis: cerrá con **Propuesta:** (1-2 líneas), **Desacuerdos:** (los que quedan abiertos, o "ninguno") y **Próximo paso:** (una acción concreta).` : ''}`;
+    const user = `HISTORIAL RECIENTE DE LA SALA (últimos ${HISTORY_LIMIT} mensajes):\n${transcriptText(history)}\n\n---\nEs tu turno (${seat.role}).`;
+    return { system, user };
+  }
+
+  function synthPrompt(room, history) {
+    const system = `Sos el MODERADOR NEUTRAL de una mesa de debate entre tres roles (${SEATS.map(s => s.role).join(', ')}) y el usuario. No aportás ideas nuevas ni tomás partido. Español rioplatense, claro y al grano. No podés verificar fuentes: si algo depende de datos externos, marcalo "(a verificar)".
+
+${roomBlock(room)}
+
+Devolvé EXACTAMENTE este formato (máximo 140 palabras):
+**Acuerdos:** (hasta 3 puntos cortos)
+**Desacuerdo clave:** (uno solo y de qué dato o decisión depende resolverlo; "ninguno" si no hay)
+**Decisión recomendada:** (1 línea; es una sugerencia, el usuario decide si la pasa a sus decisiones vigentes)
+**Próximo paso:** (1 acción concreta que el usuario pueda hacer hoy)`;
+    const user = `HISTORIAL RECIENTE DE LA SALA (últimos ${HISTORY_LIMIT} mensajes):\n${transcriptText(history)}\n\n---\nEscribí la síntesis.`;
+    return { system, user };
+  }
+
+  /* ---------------- Debate ---------------- */
+  const isLive = op => App.debate === op && !op.ctrl.signal.aborted;
+
+  function submitFromComposer() {
+    if (App.debate) { toast('Hay una ronda en curso. Esperá a que termine o frenala.', { level: 'warn' }); return; }
+    const p = current();
+    const txt = $('txtInput');
+    const text = txt.value.trim();
+    if (!text) return;
+    if (!Keys.any()) {
+      toast('Cargá al menos una clave en Conexiones API para arrancar.', { level: 'warn' });
+      openDialog('dlgKeys');
+      return;
+    }
+    appendMessage(p.id, { role: 'user', text, fromAudio: App.draftAudio.has(p.id) });
+    App.draftAudio.delete(p.id);
+    p.draft = '';
+    txt.value = '';
+    autosize();
+    scrollToBottom();
+    runOperation(p.id, 'round');
+  }
+
+  // kind: 'round' (panelistas + síntesis opcional) | 'synth' (solo síntesis)
+  async function runOperation(projectId, kind) {
+    if (App.debate) return;
+    const p = getProject(projectId);
+    if (!p) return;
+    if (!Keys.any()) { toast('Cargá al menos una clave en Conexiones API.', { level: 'warn' }); openDialog('dlgKeys'); return; }
+
+    // Foto de todo al arrancar: sala, contexto, decisiones, historial, claves y configuración.
+    const snap = { keys: Keys.snapshot(), cfg: structuredClone(App.config) };
+    const room = { context: p.context || '', decisions: p.decisions || '' };
+    const history = p.messages.filter(m => m.role === 'user' || m.role === 'agent').map(m => ({ ...m }));
+    const order = kind === 'round' ? roundOrder(p, snap.cfg) : [];
+    const synth = kind === 'synth' || snap.cfg.synthesis;
+    if (kind === 'round') { p.roundIndex = (p.roundIndex || 0) + 1; persistNow(); }
+
+    const steps = order.map((seat, i) => ({ seat, closeRound: !synth && i === order.length - 1 }));
+    if (synth) steps.push({ seat: SYNTH_SEAT, synth: true });
+
+    const op = { id: ++App.opSeq, projectId, kind, ctrl: new AbortController(), startedAt: Date.now(), order, synth, activeSeat: null };
+    App.debate = op;
+    showOpBar(op);
+    updateControls();
+    announce(kind === 'round' ? 'Arrancó la ronda' : 'Arrancó la síntesis');
+
+    try {
+      for (let i = 0; i < steps.length; i++) {
+        if (!isLive(op)) break;
+        const step = steps[i];
+        const label = step.synth ? 'Síntesis' : step.seat.role;
+        op.activeSeat = step.seat.id;
+        if (App.currentId === projectId) renderBadges();
+        const native = step.synth ? FALLBACK_ORDER.find(pr => snap.keys[pr]) : step.seat.provider;
+        if (!native) {
+          appendMessage(projectId, { role: 'system_notice', level: 'error', text: `⚠️ ${label}: no hay ninguna clave cargada.` });
+          break;
+        }
+        const { system, user } = step.synth ? synthPrompt(room, history) : seatPrompt(step.seat, room, history, step.closeRound);
+        setOpStatus(op, `${i + 1}/${steps.length} · ${label} pensando…`);
+        try {
+          const r = await callWithFallback({
+            native, snap, system, user, signal: op.ctrl.signal,
+            onAttempt: a => setOpStatus(op, `${i + 1}/${steps.length} · ${label}${a.emulated ? ` (emulado por ${PROVIDER_LABEL[a.provider]})` : ''} pensando…`),
+            onWait: w => setOpStatus(op, `${label}: ${PROVIDER_LABEL[w.provider]} respondió ${w.error.status || w.error.kind}; reintento ${w.attempt}/${w.of} en ${Math.ceil(w.waitS)} s…`)
+          });
+          if (!isLive(op)) break; // respuesta tardía de una operación frenada: se ignora
+          if (r.failures.length) {
+            appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `${label}: falló ${r.failures.map(describeError).join(' / ')}. Respondió el respaldo.` });
+          }
+          const saved = appendMessage(projectId, {
+            role: 'agent', agentId: step.seat.id, text: r.text, provider: r.provider, model: r.model,
+            emulated: step.synth ? false : r.emulated, truncated: r.truncated || undefined
+          });
+          if (saved) history.push(saved);
+          if (r.truncated) {
+            appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `${label}: la respuesta quedó TRUNCADA por el máximo de tokens (podés subirlo en Ajustes).` });
+          }
+          announce(`${label} respondió`);
+        } catch (e) {
+          if (!isLive(op) || (e instanceof ApiError && e.kind === 'cancelled')) break;
+          appendMessage(projectId, { role: 'system_notice', level: 'error', text: `⚠️ ${label}: ${describeFailure(e)}` });
+        }
+      }
+    } finally {
+      if (App.debate === op) {
+        App.debate = null;
+        hideOpBar();
+        announce('Ronda terminada');
+      }
+      renderBadges();
+      updateControls();
+    }
+  }
+
+  function stopDebate() {
+    const op = App.debate;
+    if (!op) return;
+    op.ctrl.abort();
+    App.debate = null; // desde ya: cualquier respuesta tardía de esta operación se ignora
+    hideOpBar();
+    appendMessage(op.projectId, {
+      role: 'system_notice', level: 'warn',
+      text: 'Ronda frenada: no se arrancan más turnos. Ojo: cancelar corta la espera acá, pero no garantiza que el proveedor no haya procesado (y cobrado) el pedido que estaba en curso.'
+    });
+    renderBadges();
+    updateControls();
+    announce('Ronda frenada');
+  }
+
+  /* ---------------- Grabación ---------------- */
+  const RECORD_LABEL = {
+    idle: 'Grabar audio', requesting: 'Pidiendo permiso para el micrófono', recording: 'Detener grabación', transcribing: 'Transcribiendo audio'
+  };
+
+  function setRecState(state, text = '') {
+    Rec.state = state;
+    const b = $('btnRecord');
+    b.dataset.state = state;
+    b.setAttribute('aria-label', RECORD_LABEL[state]);
+    b.disabled = state === 'requesting' || state === 'transcribing';
+    $('icoMic').hidden = state === 'recording';
+    $('icoStop').hidden = state !== 'recording';
+    $('recStatus').hidden = state === 'idle';
+    $('recStatusText').textContent = text;
+    $('btnCancelTranscribe').hidden = state !== 'transcribing';
+    if (state !== 'recording') $('recTimer').textContent = '';
+  }
+
+  function micErrorText(e) {
+    const n = e && e.name;
+    if (n === 'NotAllowedError' || n === 'SecurityError' || n === 'PermissionDeniedError') {
+      return 'Permiso de micrófono denegado. Habilitalo en los ajustes del sitio (ícono junto a la dirección) y probá de nuevo.';
+    }
+    if (n === 'NotFoundError' || n === 'DevicesNotFoundError') return 'No encontré ningún micrófono.';
+    if (n === 'NotReadableError' || n === 'TrackStartError') return 'El micrófono está en uso por otra app o no responde.';
+    return 'No se pudo usar el micrófono.';
+  }
+
+  function releaseStream(s) {
+    if (s.stream) { s.stream.getTracks().forEach(t => { try { t.stop(); } catch (e) { /* ya detenido */ } }); s.stream = null; }
+  }
+
+  async function onRecordClick() {
+    if (Rec.state === 'recording') { stopRecording('user'); return; }
+    if (Rec.state !== 'idle') return; // bloquea doble clic mientras pide permiso o transcribe
+    if (Rec.pending) {
+      toast('Hay un audio sin transcribir: reintentalo, descargalo o descartalo antes de grabar otro.', { level: 'warn' });
+      $('btnAudioRetry').focus();
+      return;
+    }
+    const sup = audioSupport();
+    if (!sup.secure) { toast('El micrófono solo funciona en HTTPS (o localhost).', { level: 'error' }); return; }
+    if (!sup.ok) { toast('Este navegador no permite grabar audio (falta MediaRecorder o getUserMedia). Escribí el texto o actualizá el navegador.', { level: 'error' }); return; }
+
+    const cfg = App.config;
+    const s = {
+      id: ++App.opSeq, projectId: App.currentId, stream: null, recorder: null, chunks: [], bytes: 0,
+      maxS: cfg.maxRecS, maxBytes: cfg.maxAudioMB * 1024 * 1024, stopReason: null, finished: false, timers: []
+    };
+    Rec.session = s;
+    setRecState('requesting', 'Pidiendo permiso para el micrófono…');
+    try {
+      s.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      if (Rec.session === s) Rec.session = null;
+      setRecState('idle');
+      toast(micErrorText(e), { level: 'error' });
+      return;
+    }
+    if (Rec.session !== s) { releaseStream(s); return; }
+    const mime = pickRecorderMime();
+    try {
+      s.recorder = mime ? new MediaRecorder(s.stream, { mimeType: mime }) : new MediaRecorder(s.stream);
+    } catch (e) {
+      releaseStream(s);
+      Rec.session = null;
+      setRecState('idle');
+      toast('No pude iniciar la grabación en este navegador.', { level: 'error' });
+      return;
+    }
+    s.recorder.ondataavailable = e => {
+      if (!e.data || !e.data.size) return;
+      s.chunks.push(e.data);
+      s.bytes += e.data.size;
+      if (s.bytes >= s.maxBytes * 0.97) stopRecording('size');
+    };
+    s.recorder.onstop = () => finishRecording(s);
+    s.recorder.onerror = () => { s.stopReason = s.stopReason || 'error'; stopRecording('error'); };
+    try {
+      s.recorder.start(1000);
+    } catch (e) {
+      releaseStream(s);
+      Rec.session = null;
+      setRecState('idle');
+      toast('No pude iniciar la grabación.', { level: 'error' });
+      return;
+    }
+    s.startedAt = Date.now();
+    setRecState('recording', 'Grabando… tocá el cuadrado para terminar.');
+    const tick = () => { $('recTimer').textContent = `${fmtClock((Date.now() - s.startedAt) / 1000)} / ${fmtClock(s.maxS)}`; };
+    tick();
+    s.timers.push(setInterval(tick, 500));
+    s.timers.push(setTimeout(() => stopRecording('time'), s.maxS * 1000));
+    announce('Grabando');
+  }
+
+  function stopRecording(reason) {
+    const s = Rec.session;
+    if (!s || !s.recorder) return;
+    s.stopReason = s.stopReason || reason;
+    s.timers.forEach(t => { clearInterval(t); clearTimeout(t); });
+    if (s.recorder.state !== 'inactive') {
+      try { s.recorder.stop(); } catch (e) { finishRecording(s); }
+    } else {
+      finishRecording(s);
+    }
+  }
+
+  function finishRecording(s) {
+    if (s.finished) return;
+    s.finished = true;
+    s.timers.forEach(t => { clearInterval(t); clearTimeout(t); });
+    releaseStream(s); // liberar el micrófono siempre
+    if (Rec.session === s) Rec.session = null;
+    const blob = new Blob(s.chunks, { type: (s.recorder && s.recorder.mimeType) || 'audio/webm' });
+    s.chunks = [];
+    if (s.stopReason === 'time') toast(`Llegaste al máximo de ${fmtClock(s.maxS)}: corté la grabación y la mando a transcribir.`, { level: 'warn' });
+    if (s.stopReason === 'size') toast(`El audio llegó al límite de ${Math.round(s.maxBytes / 1048576)} MB: corté la grabación y la mando a transcribir.`, { level: 'warn' });
+    if (s.stopReason === 'error') toast('La grabación se interrumpió por un error del navegador. Intento transcribir lo grabado.', { level: 'warn' });
+    if (blob.size < 1000) {
+      setRecState('idle');
+      toast('El audio quedó vacío o muy corto. Probá de nuevo.', { level: 'warn' });
+      return;
+    }
+    startTranscription(blob, s.projectId);
+  }
+
+  /* ---------------- Transcripción ---------------- */
+  async function startTranscription(blob, projectId) {
+    const snap = { keys: Keys.snapshot(), cfg: structuredClone(App.config) };
+    const provider = resolveTranscriber(snap.cfg, snap.keys);
+    if (!provider) {
+      setRecState('idle');
+      keepPending(blob, projectId, snap.cfg.txProvider === 'auto'
+        ? 'No hay clave para transcribir (Groq, OpenAI o Gemini).'
+        : `Falta la clave de ${PROVIDER_LABEL[snap.cfg.txProvider]}, el proveedor de transcripción elegido.`);
+      return;
+    }
+    const p = getProject(projectId);
+    const tx = { id: ++App.opSeq, projectId, blob, ctrl: new AbortController() };
+    Rec.tx = tx;
+    $('audioPanel').hidden = true;
+    setRecState('transcribing', `Transcribiendo con ${PROVIDER_LABEL[provider]}…`);
+    announce('Transcribiendo');
+    try {
+      const text = await transcribeAudio({
+        provider, key: snap.keys[provider], model: snap.cfg.txModels[provider], blob,
+        glossary: p ? p.glossary : '', signal: tx.ctrl.signal, timeoutMs: snap.cfg.timeoutTxS * 1000, retries: snap.cfg.retries,
+        onWait: w => { if (Rec.tx === tx) $('recStatusText').textContent = `${PROVIDER_LABEL[provider]} respondió ${w.error.status}; reintento en ${Math.ceil(w.waitS)} s…`; }
+      });
+      if (Rec.tx !== tx) return; // cancelada o reemplazada: se ignora
+      Rec.tx = null;
+      setRecState('idle');
+      clearPending();
+      deliverTranscript(projectId, text, snap.cfg);
+    } catch (e) {
+      if (Rec.tx !== tx) return;
+      Rec.tx = null;
+      setRecState('idle');
+      keepPending(blob, projectId, describeError(e));
+      toast(`No se pudo transcribir. ${describeError(e)}`, { level: 'error', timeout: 10000 });
+    }
+  }
+
+  function cancelTranscription() {
+    const tx = Rec.tx;
+    if (!tx) return;
+    tx.ctrl.abort();
+    Rec.tx = null;
+    setRecState('idle');
+    keepPending(tx.blob, tx.projectId, 'Cancelaste la transcripción (puede que el proveedor igual la procese y la cobre).');
+    announce('Transcripción cancelada');
+  }
+
+  function deliverTranscript(projectId, text, cfg) {
+    let p = getProject(projectId);
+    if (!p) { p = current(); toast('La sala de origen ya no existe: dejé la transcripción en la sala actual.', { level: 'warn' }); }
+    const isOpen = p.id === App.currentId;
+    const prev = isOpen ? $('txtInput').value : (p.draft || '');
+    p.draft = (prev.trim() ? prev.trimEnd() + ' ' : '') + text;
+    App.draftAudio.add(p.id);
+    if (isOpen) { $('txtInput').value = p.draft; autosize(); }
+    persistNow();
+    announce('Transcripción lista');
+    if (cfg.autoSend && isOpen && !App.debate) { submitFromComposer(); return; }
+    const why = cfg.autoSend ? (!isOpen ? ' No la envié porque cambiaste de sala.' : ' No la envié porque hay una ronda en curso.') : '';
+    if (!isOpen) toast(`Transcripción lista en el borrador de «${p.name}».${why}`, { level: 'ok', timeout: 7000 });
+    else toast(`Transcripción lista: revisá el texto antes de enviar.${why}`, { level: 'ok' });
+    if (isOpen && !isTouch) $('txtInput').focus();
+  }
+
+  function keepPending(blob, projectId, reason) {
+    clearPending();
+    const url = URL.createObjectURL(blob);
+    Rec.pending = { blob, url, projectId };
+    const p = getProject(projectId);
+    $('audioPanelText').textContent = `${reason} Sala: «${p ? p.name : '?'}». Podés reintentar, descargarlo o descartarlo.`;
+    $('audioPreview').src = url;
+    $('audioPanel').hidden = false;
+  }
+
+  function clearPending() {
+    const pnd = Rec.pending;
+    if (pnd) {
+      const a = $('audioPreview');
+      a.pause();
+      a.removeAttribute('src');
+      a.load();
+      URL.revokeObjectURL(pnd.url);
+      Rec.pending = null;
+    }
+    $('audioPanel').hidden = true;
+  }
+
+  /* ---------------- Diálogos accesibles ---------------- */
+  const FOCUSABLE = 'button:not([disabled]):not([hidden]), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  function openDialog(id, focusId) {
+    const d = $(id);
+    if (d.open) return;
+    d._opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', '');
+    const target = (focusId && $(focusId)) || d.querySelector('.dlg-body ' + FOCUSABLE) || d.querySelector(FOCUSABLE);
+    if (target) target.focus();
+  }
+  function closeDialog(d) {
+    if (typeof d.close === 'function') d.close(); else { d.removeAttribute('open'); d.dispatchEvent(new Event('close')); }
+  }
+
+  document.querySelectorAll('dialog').forEach(d => {
+    d.addEventListener('close', () => {
+      const o = d._opener;
+      d._opener = null;
+      if (o && document.contains(o)) o.focus();
+    });
+    d.addEventListener('click', e => { if (e.target === d) closeDialog(d); }); // clic en el fondo
+    d.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { e.preventDefault(); closeDialog(d); return; }
+      if (e.key !== 'Tab') return;
+      const f = [...d.querySelectorAll(FOCUSABLE)].filter(x => x.offsetParent !== null);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+    d.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeDialog(d)));
+  });
+
+  /* ---------------- Salas ---------------- */
+  function roomBusy(id) {
+    return Boolean((App.debate && App.debate.projectId === id) || (Rec.tx && Rec.tx.projectId === id) || (Rec.session && Rec.session.projectId === id));
+  }
+
+  function renderRoomList() {
+    const list = $('roomList');
+    const canDelete = App.projects.length > 1;
+    list.replaceChildren(...App.projects.map(p => {
+      const isCur = p.id === App.currentId;
+      const count = p.messages.filter(m => m.role !== 'system_notice').length;
+      return el('li', { class: 'room-item' }, [
+        el('button', { type: 'button', class: 'room-open', 'aria-current': isCur ? 'true' : null, onclick: () => { switchRoom(p.id); closeDialog($('dlgRooms')); } }, [
+          el('span', { class: 'n', text: p.name }),
+          el('span', { class: 'c' }, [roomBusy(p.id) ? el('span', { class: 'busy-tag', text: 'EN CURSO · ' }) : null, `${count} msjs`])
+        ]),
+        canDelete ? el('button', { type: 'button', class: 'room-del', 'aria-label': `Borrar sala ${p.name}`, text: '✕', onclick: () => deleteRoom(p.id) }) : null
+      ]);
+    }));
+  }
+
+  function switchRoom(id) {
+    if (!getProject(id) || id === App.currentId) return;
+    current().draft = $('txtInput').value;
+    App.currentId = id;
+    persistNow();
+    renderRoom();
+    announce(`Sala ${current().name}`);
+  }
+
+  function busyReason(id) {
+    const p = getProject(id);
+    return `«${p ? p.name : ''}» tiene una ronda, grabación o transcripción en curso: si la borro o limpio ahora, esas respuestas no tendrían dónde guardarse. Frenala o esperá a que termine.`;
+  }
+
+  function deleteRoom(id) {
+    const p = getProject(id);
+    if (!p || App.projects.length <= 1) return;
+    if (roomBusy(id)) { toast(`No se puede borrar: ${busyReason(id)}`, { level: 'warn' }); return; }
+    if (!window.confirm(`¿Borrar la sala «${p.name}» y todo su historial? No se puede deshacer (salvo que tengas un JSON exportado).`)) return;
+    App.projects = App.projects.filter(x => x.id !== id);
+    App.draftAudio.delete(id);
+    if (App.currentId === id) { App.currentId = App.projects[0].id; renderRoom(); }
+    persistNow();
+    renderRoomList();
+    const first = $('roomList').querySelector('button');
+    if (first) first.focus();
+    toast(`Sala «${p.name}» borrada.`);
+  }
+
+  function createRoom(name) {
+    const p = {
+      id: newId('proj'), name: name.slice(0, LIMITS.name), roundIndex: 0,
+      glossary: 'Next.js, React, Railway, Vercel, MVP',
+      context: `PROYECTO: ${name}\nOBJETIVO: Definir diseño, arquitectura técnica simple y un plan de ejecución rápido.`,
+      decisions: '', draft: '',
+      messages: [{ id: newId('m'), role: 'system_notice', text: `Sala "${name}" creada. Abrí "Contexto" arriba para cargar detalles, o mandá directo tu idea.` }]
+    };
+    current().draft = $('txtInput').value;
+    App.projects.unshift(p);
+    App.currentId = p.id;
+    persistNow();
+    renderRoom();
+  }
+
+  /* ---------------- Contexto de sala ---------------- */
+  function openContext() {
+    const p = current();
+    const d = $('dlgContext');
+    d.dataset.projectId = p.id;
+    $('ctxName').value = p.name;
+    $('ctxContext').value = p.context || '';
+    $('ctxDecisions').value = p.decisions || '';
+    $('ctxGlossary').value = p.glossary || '';
+    openDialog('dlgContext', 'ctxContext');
+  }
+
+  function saveContext() {
+    const d = $('dlgContext');
+    const p = getProject(d.dataset.projectId);
+    if (!p) { closeDialog(d); return; }
+    p.name = $('ctxName').value.trim().slice(0, LIMITS.name) || p.name;
+    p.context = $('ctxContext').value.slice(0, LIMITS.context);
+    p.decisions = $('ctxDecisions').value.slice(0, LIMITS.decisions);
+    p.glossary = $('ctxGlossary').value.trim().slice(0, LIMITS.glossary);
+    persistNow();
+    if (p.id === App.currentId) $('roomTitle').textContent = p.name;
+    closeDialog(d);
+    toast(roomBusy(p.id) ? 'Guardado. La ronda en curso sigue con el contexto anterior; esto aplica a la próxima.' : 'Contexto guardado.', { level: 'ok' });
+  }
+
+  function clearHistory() {
+    const d = $('dlgContext');
+    const p = getProject(d.dataset.projectId);
+    if (!p) return;
+    if (roomBusy(p.id)) { toast(`No se puede limpiar: ${busyReason(p.id)}`, { level: 'warn' }); return; }
+    if (!window.confirm(`¿Limpiar todos los mensajes de «${p.name}»? El contexto, las decisiones y el glosario se mantienen.`)) return;
+    p.messages = [{ id: newId('m'), role: 'system_notice', text: 'Historial reiniciado. Contexto y decisiones vigentes activos.' }];
+    p.roundIndex = 0;
+    persistNow();
+    if (p.id === App.currentId) renderRoom();
+    closeDialog(d);
+  }
+
+  /* ---------------- Conexiones API ---------------- */
+  const KEY_FIELDS = { claude: 'keyClaude', openai: 'keyOpenai', gemini: 'keyGemini', groq: 'keyGroq' };
+
+  function openKeys() {
+    for (const [p, id] of Object.entries(KEY_FIELDS)) { $(id).value = Keys.mem[p]; $(id).type = 'password'; }
+    $('chkShowKeys').checked = false;
+    $('chkRememberKeys').checked = App.config.rememberKeys;
+    openDialog('dlgKeys');
+  }
+
+  function persistConfigOrWarn() {
+    const r = saveConfig(App.config);
+    if (!r.ok) toast(`No pude guardar los ajustes (${storageErrorText(r.error)}). Valen para esta sesión.`, { level: 'warn' });
+    return r.ok;
+  }
+
+  function onRememberToggle() {
+    const on = $('chkRememberKeys').checked;
+    App.config.rememberKeys = on;
+    persistConfigOrWarn();
+    if (!on) {
+      const r = lsRemove(STORE.keys);
+      toast(r.ok ? 'Borré la copia guardada de las claves. Siguen en memoria hasta que cierres o recargues la pestaña.' : `No pude borrar la copia guardada (${storageErrorText(r.error)}).`, { level: r.ok ? 'ok' : 'error' });
+    } else {
+      toast('Al tocar "Aplicar", las claves se guardan sin cifrar en este navegador.', { level: 'warn' });
+    }
+  }
+
+  function applyKeys() {
+    const vals = {};
+    for (const [p, id] of Object.entries(KEY_FIELDS)) vals[p] = $(id).value;
+    Keys.setAll(vals);
+    App.config.rememberKeys = $('chkRememberKeys').checked;
+    persistConfigOrWarn();
+    const r = persistKeys(App.config);
+    updateControls();
+    closeDialog($('dlgKeys'));
+    if (!r.ok) toast(`No pude guardar las claves en el navegador (${storageErrorText(r.error)}). Quedan solo en memoria.`, { level: 'warn' });
+    else toast(App.config.rememberKeys ? 'Claves aplicadas y recordadas en este navegador (sin cifrar).' : 'Claves aplicadas solo en memoria: se pierden al cerrar o recargar.', { level: 'ok' });
+  }
+
+  function clearKeys() {
+    if (!window.confirm('¿Borrar todas las claves de la memoria y de este navegador?')) return;
+    const ok = wipeAllKeys();
+    for (const id of Object.values(KEY_FIELDS)) $(id).value = '';
+    updateControls();
+    toast(ok ? 'Claves borradas de la memoria, del navegador y de los campos.' : 'Borré las claves de la memoria, pero el navegador no me dejó borrar la copia guardada.', { level: ok ? 'ok' : 'error' });
+  }
+
+  /* ---------------- Ajustes ---------------- */
+  const MODEL_FIELDS = { claude: 'mClaude', openai: 'mOpenai', gemini: 'mGemini', groq: 'mGroq' };
+  const TX_FIELDS = { groq: 'txGroq', openai: 'txOpenai', gemini: 'txGemini' };
+
+  function fillSettings(c) {
+    for (const [p, id] of Object.entries(MODEL_FIELDS)) $(id).value = c.models[p];
+    for (const [p, id] of Object.entries(TX_FIELDS)) $(id).value = c.txModels[p];
+    $('setTxProvider').value = c.txProvider;
+    $('setRotate').checked = c.rotate;
+    $('setSynthesis').checked = c.synthesis;
+    $('setFbMissing').checked = c.fallbackMissing;
+    $('setFbError').checked = c.fallbackOnError;
+    $('setRetries').value = c.retries;
+    $('setTimeoutDebate').value = c.timeoutDebateS;
+    $('setTimeoutTx').value = c.timeoutTxS;
+    $('setMaxTokens').value = c.maxTokens;
+    $('setMaxRec').value = c.maxRecS;
+    $('setMaxMB').value = c.maxAudioMB;
+    $('setAutoSend').checked = c.autoSend;
+  }
+
+  function saveSettings() {
+    const raw = {
+      models: {}, txModels: {},
+      txProvider: $('setTxProvider').value,
+      rotate: $('setRotate').checked, synthesis: $('setSynthesis').checked,
+      fallbackMissing: $('setFbMissing').checked, fallbackOnError: $('setFbError').checked,
+      retries: $('setRetries').value, timeoutDebateS: $('setTimeoutDebate').value, timeoutTxS: $('setTimeoutTx').value,
+      maxTokens: $('setMaxTokens').value, maxRecS: $('setMaxRec').value, maxAudioMB: $('setMaxMB').value,
+      autoSend: $('setAutoSend').checked, rememberKeys: App.config.rememberKeys
+    };
+    for (const [p, id] of Object.entries(MODEL_FIELDS)) raw.models[p] = $(id).value;
+    for (const [p, id] of Object.entries(TX_FIELDS)) raw.txModels[p] = $(id).value;
+    App.config = sanitizeConfig(raw);
+    persistConfigOrWarn();
+    renderBadges();
+    closeDialog($('dlgSettings'));
+    const busy = App.debate || Rec.tx;
+    toast(busy ? 'Ajustes guardados. La operación en curso sigue con los anteriores; estos aplican a la próxima.' : 'Ajustes guardados.', { level: 'ok' });
+  }
+
+  /* ---------------- Exportar ---------------- */
+  function buildMarkdown(p) {
+    const lines = [`# ${p.name}`, '', '## Contexto', p.context || '(vacío)', '', '## Decisiones vigentes', p.decisions || '(ninguna)', '', '## Conversación', ''];
+    for (const m of p.messages) {
+      if (m.role === 'user') lines.push(`### Vos${m.fromAudio ? ' (audio)' : ''}${m.time ? ' · ' + m.time : ''}`, m.text, '');
+      if (m.role === 'agent') {
+        const s = seatById(m.agentId) || SEATS[0];
+        const real = m.provider ? `${PROVIDER_LABEL[m.provider]} · ${m.model || ''}` : (m.via || '');
+        const title = m.agentId === 'sintesis' ? 'Síntesis' : m.emulated ? `${s.role} (EMULADO por ${real})` : `${s.name} — ${s.role}${real ? ' · ' + real : ''}`;
+        lines.push(`### ${title}${m.truncated ? ' [truncada]' : ''}`, m.text, '');
+      }
+    }
+    return redact(lines.join('\n'));
+  }
+
+  async function copyMarkdown() {
+    const p = current();
+    const md = buildMarkdown(p);
+    try {
+      if (!navigator.clipboard || !window.isSecureContext) throw new Error('sin portapapeles');
+      await navigator.clipboard.writeText(md);
+      toast('Debate copiado en Markdown.', { level: 'ok' });
+    } catch (e) {
+      downloadBlob(new Blob([md], { type: 'text/markdown;charset=utf-8' }), `${fileSafe(p.name)}.md`);
+      toast('No pude usar el portapapeles: lo descargué como .md.', { level: 'warn' });
+    }
+  }
+
+  function exportJson() {
+    const payload = { app: 'mesa-chica-ai', version: 3, exportedAt: new Date().toISOString(), projects: App.projects };
+    const json = redact(JSON.stringify(payload, null, 2)); // las salas no tienen claves; igual se redacta por las dudas
+    downloadBlob(new Blob([json], { type: 'application/json' }), `mesa-chica-salas-${dateStamp()}.json`);
+    toast('Respaldo JSON descargado (sin claves).', { level: 'ok' });
+  }
+
+  /* ---------------- Importar ---------------- */
+  async function onImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    resetImport(false);
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) { toast('El archivo es demasiado grande (máx. 25 MB).', { level: 'error' }); return; }
+    let text;
+    try { text = await file.text(); } catch (err) { toast('No pude leer el archivo.', { level: 'error' }); return; }
+    const parsed = safeParse(text);
+    if (!parsed.ok) { toast('El archivo no es un JSON válido.', { level: 'error' }); return; }
+    const data = Array.isArray(parsed.value) ? parsed.value : (parsed.value && Array.isArray(parsed.value.projects) ? parsed.value.projects : null);
+    const v = validateProjects(data);
+    if (v.fatal || !v.projects.length) { toast('No encontré salas válidas en el archivo.', { level: 'error' }); return; }
+    App.importCandidate = v.projects;
+    const msgs = v.projects.reduce((n, p) => n + p.messages.length, 0);
+    const summary = $('importSummary');
+    summary.replaceChildren(el('strong', { text: `${v.projects.length} sala(s), ${msgs} mensaje(s).` }));
+    if (v.issues.length) {
+      summary.append(el('p', { class: 'hint', text: `Arreglos al validar: ${v.issues.slice(0, 5).join(' · ')}${v.issues.length > 5 ? ' …' : ''}` }));
+    }
+    $('importList').replaceChildren(...v.projects.map(p => el('li', { text: `${p.name} (${p.messages.length} msjs)` })));
+    $('importPreview').hidden = false;
+    $('btnImportConfirm').focus();
+  }
+
+  function resetImport(clearInput = true) {
+    App.importCandidate = null;
+    $('importPreview').hidden = true;
+    $('importList').replaceChildren();
+    $('importSummary').replaceChildren();
+    if (clearInput) $('fileImport').value = '';
+  }
+
+  function confirmImport() {
+    const incoming = App.importCandidate;
+    if (!incoming) return;
+    const mode = document.querySelector('input[name="importMode"]:checked').value;
+    if (mode === 'replace') {
+      if (App.debate || Rec.tx || Rec.session) { toast('No se puede reemplazar todo con una ronda, grabación o transcripción en curso. Frenala primero.', { level: 'warn' }); return; }
+      if (!window.confirm(`¿Reemplazar tus ${App.projects.length} sala(s) actuales por las ${incoming.length} importadas? Las actuales se pierden (exportalas antes si las querés).`)) return;
+      App.projects = structuredClone(incoming);
+      App.currentId = App.projects[0].id;
+      App.draftAudio.clear();
+    } else {
+      const ids = new Set(App.projects.map(p => p.id));
+      for (const p of structuredClone(incoming)) {
+        if (ids.has(p.id)) p.id = newId('proj');
+        ids.add(p.id);
+        App.projects.push(p);
+      }
+    }
+    persistNow();
+    renderRoom();
+    resetImport();
+    closeDialog($('dlgExport'));
+    toast(mode === 'replace' ? 'Salas reemplazadas.' : `Agregué ${incoming.length} sala(s).`, { level: 'ok' });
+  }
+
+  /* ---------------- Eventos ---------------- */
+  function bindEvents() {
+    const txt = $('txtInput');
+    txt.addEventListener('input', () => {
+      current().draft = txt.value;
+      autosize();
+      scheduleSave();
+    });
+    txt.addEventListener('keydown', e => {
+      // En celular Enter = salto de línea. En escritorio Enter envía (Shift+Enter = salto). Nunca durante composición IME.
+      if (e.key !== 'Enter' || e.shiftKey || isTouch || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      submitFromComposer();
+    });
+    $('btnSend').addEventListener('click', submitFromComposer);
+    $('btnMore').addEventListener('click', () => runOperation(App.currentId, 'round'));
+    $('btnSynth').addEventListener('click', () => runOperation(App.currentId, 'synth'));
+    $('btnStop').addEventListener('click', stopDebate);
+    $('btnRecord').addEventListener('click', onRecordClick);
+    $('btnCancelTranscribe').addEventListener('click', cancelTranscription);
+    $('btnAudioRetry').addEventListener('click', () => {
+      const pnd = Rec.pending;
+      if (!pnd || Rec.state !== 'idle') return;
+      startTranscription(pnd.blob, pnd.projectId);
+    });
+    $('btnAudioDownload').addEventListener('click', () => {
+      const pnd = Rec.pending;
+      if (!pnd) return;
+      downloadBlob(pnd.blob, `audio-mesa-chica-${dateStamp()}.${audioFileInfo(pnd.blob.type).ext || 'webm'}`);
+    });
+    $('btnAudioDiscard').addEventListener('click', () => {
+      if (Rec.pending && window.confirm('¿Descartar este audio? No se puede recuperar.')) { clearPending(); $('btnRecord').focus(); }
+    });
+
+    chat.addEventListener('scroll', () => { if (nearBottom()) $('btnNewMsgs').hidden = true; }, { passive: true });
+    $('btnNewMsgs').addEventListener('click', () => { scrollToBottom(); chat.focus({ preventScroll: true }); });
+
+    $('btnRooms').addEventListener('click', () => { renderRoomList(); openDialog('dlgRooms', null); });
+    $('formNewRoom').addEventListener('submit', e => {
+      e.preventDefault();
+      const name = $('newRoomName').value.trim();
+      if (!name) { $('newRoomName').focus(); return; }
+      $('newRoomName').value = '';
+      createRoom(name);
+      closeDialog($('dlgRooms'));
+    });
+
+    $('btnContext').addEventListener('click', openContext);
+    $('btnSaveContext').addEventListener('click', saveContext);
+    $('btnClearHistory').addEventListener('click', clearHistory);
+
+    $('btnKeys').addEventListener('click', openKeys);
+    $('chkShowKeys').addEventListener('change', e => {
+      for (const id of Object.values(KEY_FIELDS)) $(id).type = e.target.checked ? 'text' : 'password';
+    });
+    $('chkRememberKeys').addEventListener('change', onRememberToggle);
+    $('btnApplyKeys').addEventListener('click', applyKeys);
+    $('btnClearKeys').addEventListener('click', clearKeys);
+
+    $('btnSettings').addEventListener('click', () => { fillSettings(App.config); openDialog('dlgSettings'); });
+    $('btnSaveSettings').addEventListener('click', saveSettings);
+    $('btnResetSettings').addEventListener('click', () => {
+      fillSettings(structuredClone(DEFAULT_CONFIG));
+      toast('Cargué los valores por defecto en el formulario: tocá Guardar para aplicarlos.');
+    });
+
+    $('btnExport').addEventListener('click', () => { resetImport(); openDialog('dlgExport'); });
+    $('btnCopyMd').addEventListener('click', copyMarkdown);
+    $('btnDownloadMd').addEventListener('click', () => {
+      const p = current();
+      downloadBlob(new Blob([buildMarkdown(p)], { type: 'text/markdown;charset=utf-8' }), `${fileSafe(p.name)}.md`);
+    });
+    $('btnExportJson').addEventListener('click', exportJson);
+    $('fileImport').addEventListener('change', onImportFile);
+    $('btnImportConfirm').addEventListener('click', confirmImport);
+    $('btnImportCancel').addEventListener('click', () => { resetImport(); $('fileImport').focus(); });
+
+    $('btnWarnExport').addEventListener('click', exportJson);
+    $('btnWarnRaw').addEventListener('click', () => {
+      if (Persist.rawOriginal != null) downloadBlob(new Blob([Persist.rawOriginal], { type: 'application/json' }), `mesa-chica-original-danado-${dateStamp()}.json`);
+    });
+    $('btnWarnForce').addEventListener('click', () => {
+      if (!window.confirm('Esto reemplaza los datos dañados guardados por tus salas actuales. ¿Ya descargaste el original?')) return;
+      Persist.lockWrites = false;
+      if (persistNow()) toast('Guardado.', { level: 'ok' });
+    });
+
+    // Guardar borradores al salir y liberar el micrófono.
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && saveTimer) persistNow(); });
+    window.addEventListener('pagehide', () => {
+      if (saveTimer) persistNow();
+      if (Rec.session) { Rec.session.stopReason = 'page'; releaseStream(Rec.session); }
+    });
+    window.addEventListener('beforeunload', e => {
+      if (App.debate || Rec.session || Rec.tx) { e.preventDefault(); e.returnValue = ''; }
+    });
+  }
+
+  /* ---------------- Inicio ---------------- */
+  function init() {
+    // Botones extra del aviso de almacenamiento (solo para datos dañados sin copia).
+    const warn = $('storageWarning');
+    warn.append(
+      el('button', { id: 'btnWarnRaw', class: 'btn sm', type: 'button', text: 'Descargar original', hidden: true }),
+      el('button', { id: 'btnWarnForce', class: 'btn sm danger', type: 'button', text: 'Guardar igual', hidden: true })
+    );
+
+    const notices = [];
+    const c = loadConfig();
+    App.config = c.config;
+    notices.push(...c.notices);
+    const legacy = migrateLegacyKeys();     // después de loadConfig: ésta lee el flag de respaldo viejo
+    if (legacy) notices.push(legacy);
+    if (c.needsSave) persistConfigOrWarn();
+    const rk = loadRememberedKeys(App.config);
+    if (rk) notices.push(rk);
+
+    const lp = loadProjects();
+    App.projects = lp.projects;
+    App.currentId = lp.currentId && getProject(lp.currentId) ? lp.currentId : App.projects[0].id;
+    notices.push(...lp.notices);
+
+    bindEvents();
+    setRecState('idle');
+    renderRoom();
+
+    if (lp.needsSave) persistNow();
+    else if (Persist.lockWrites) showStorageWarning('locked');
+    else if (Persist.blocked) showStorageWarning('blocked');
+
+    for (const n of notices) toast(n.text, { level: n.level, timeout: n.level === 'info' ? 7000 : 0 });
+    if (!audioSupport().ok) $('btnRecord').title = 'Este navegador o conexión no permite grabar audio';
+  }
+
+  init();
+  </script>
 </body>
 </html>

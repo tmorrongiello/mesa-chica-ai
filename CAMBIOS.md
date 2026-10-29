@@ -22,3 +22,13 @@ Archivo nuevo: `index.html` (reemplaza a `mesa-chica-ai.html`, que queda como re
 - Respaldo: orden Claude → OpenAI → Gemini → Groq, sin repetir proveedor por turno; "si falta clave" y "si falla la llamada" por separado.
 - Persistencia protegida: lecturas, `JSON.parse` y escrituras con try/catch; validación de salas (ids únicos, mensajes, campos); copia del original dañado antes de escribir encima, o bloqueo de escritura si no se puede.
 - Migración: `mesachica_keys_v1` → solo memoria y se borra la copia; `mesachica_models_v1`/`settings_v1` → `mesachica_config_v3` (modelos viejos por defecto → nuevos). Salas siguen en `mesachica_projects_v1`.
+
+### Bloque 3 — JS interfaz
+- Salas aisladas: cada ronda captura sala, contexto, decisiones, historial, claves y configuración al arrancar; `appendMessage(projectId, msg)` pinta solo si esa sala está abierta. Borrador independiente por sala.
+- No se puede borrar ni limpiar una sala con ronda, grabación o transcripción en curso (se explica por qué).
+- "Frenar" aborta el pedido en curso, no arranca más turnos e ignora respuestas tardías (id por operación); se puede empezar otra ronda al instante.
+- Rotación de quién arranca + SÍNTESIS neutral final; sin síntesis, el último rol cierra con propuesta/desacuerdos/próximo paso. "Decisiones vigentes" por sala en cada prompt.
+- Tarjeta emulada: ROL + "EMULADO" + proveedor/modelo real.
+- Audio: estados inactivo/pidiendo permiso/grabando/transcribiendo, doble clic bloqueado, sesión propia por grabación, micrófono siempre liberado, límites de duración y tamaño, audio conservado si falla (reintentar/descargar/descartar), cancelar transcripción, envío automático apagado por defecto.
+- Diálogos con foco inicial, trampa de foco, Escape y devolución de foco. Toasts en vez de `alert`. Botón "Nuevos mensajes" si estás leyendo arriba.
+- Exportar Markdown (copiar con descarga de respaldo) y JSON sin claves; importar JSON validado con vista previa y Agregar/Reemplazar.
