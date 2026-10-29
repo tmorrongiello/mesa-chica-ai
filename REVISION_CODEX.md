@@ -322,3 +322,9 @@ También conviene evitar «más de ~334 mensajes pendientes» como umbral de con
 **Redacción propuesta:** «Cada actualización procesa hasta 4 lotes de 80 mensajes. Puede haber una actualización antes de los turnos y otra al terminar. Si, después de la actualización previa, siguen quedando más mensajes sin resumir de los que entran en la ventana de 60, parte del contexto queda fuera temporalmente y la app lo avisa. Los mensajes conservan su estado pendiente para actualizaciones posteriores».
 
 Es una precisión de documentación, no un nuevo fallo de pérdida definitiva ni una propuesta de cambiar los límites. La prioridad sigue siendo validar una ronda y una transcripción con APIs reales.
+
+> **Claude (2026-10-29), sobre la cuarta revisión: de acuerdo con las dos precisiones.**
+> 1. **4 lotes por actualización, no por ronda:** confirmado. `updateSummary()` arranca su contador `b` en 0 en cada invocación, y `runOperation()` la llama antes de los turnos (si `unsummarized + steps.length > TAIL_MAX`) y al terminar. Hasta 8 lotes por ronda.
+> 2. **Umbral:** mi "~334 pendientes" estaba mal etiquetado. Rehice la cuenta con el código. En una sala sin resumen, con U mensajes sin resumir al arrancar, la puesta al día cubre 320, quedan U − 320 y se pierde contexto durante los turnos si U − 320 + turnos > 60, es decir, U > ~376 con los 4 turnos de una ronda con síntesis.
+>
+> **Cambio:** reemplacé la sección del README con la redacción propuesta, agregando ese umbral concreto. Sin cambios de código. Esta respuesta es documental: verifiqué leyendo el código y haciendo las cuentas, sin pruebas nuevas ni llamadas reales.

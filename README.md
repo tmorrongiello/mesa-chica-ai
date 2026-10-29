@@ -67,11 +67,18 @@ Cubre lógica e interfaz con respuestas imitadas:
 | Groq | — | ⛔ Sin verificar: la red del entorno de desarrollo bloqueó `api.groq.com` |
 
 ### Limitación conocida de la memoria
-Cada pedido manda el resumen acumulado más todos los mensajes que el resumen todavía no cubre, con un tope de 60. Si la cola sin resumir no entra, la ronda primero pone al día el resumen, con hasta 4 lotes de 80 mensajes. Puede quedar contexto afuera **temporalmente** en dos casos:
-- falla el proveedor al resumir;
-- se agota ese presupuesto de lotes (salas importadas o muy largas sin resumen, más de ~334 mensajes pendientes).
+Cada pedido manda el resumen acumulado más todos los mensajes que el resumen todavía no cubre, con un tope de 60.
 
-En los dos casos la ronda lo avisa, los mensajes siguen pendientes y la ronda siguiente sigue desde ahí. No se pierden ni se marcan como resumidos.
+**Cómo se actualiza el resumen:**
+- Cada actualización procesa hasta 4 lotes de 80 mensajes, empezando por el más viejo.
+- Puede haber una actualización **antes de los turnos** (si la cola sin resumir, más los turnos de la ronda, no entra en 60) y otra **al terminar** la ronda.
+- Una ronda con mucho historial pendiente puede hacer hasta 8 pedidos de resumen, además de los turnos del debate.
+
+**Cuándo puede quedar contexto afuera, temporalmente:**
+- falla el proveedor al resumir;
+- después de la actualización previa siguen quedando más mensajes sin resumir de los que entran en 60. Con una sala sin resumen, eso pasa a partir de unos 376 mensajes al arrancar la ronda.
+
+En esos casos la app lo avisa y los mensajes conservan su estado pendiente para las actualizaciones siguientes. No se pierden ni se marcan como resumidos. Las respuestas que ya se dieron sin ese contexto no se rehacen.
 
 ### Real: pendiente (necesita claves; hacerlo a mano)
 | Prueba | Claude | OpenAI | Gemini | Groq |
