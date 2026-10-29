@@ -350,7 +350,7 @@
   <footer class="composer">
     <div class="composer-inner">
       <div class="composer-meta">
-        <span id="sendInfo">Cada turno envía: contexto + decisiones vigentes + últimos 14 mensajes.</span>
+        <span id="sendInfo">Cada turno envía: objetivo + contexto + decisiones + resumen + últimos 14 mensajes.</span>
         <div class="meta-actions">
           <button id="btnSynth" class="link-btn violet" type="button">Sintetizar</button>
           <button id="btnMore" class="link-btn sky" type="button">+1 ronda</button>
@@ -411,6 +411,11 @@
           <input type="text" id="ctxName" maxlength="80" autocomplete="off">
         </div>
         <div class="field">
+          <label for="ctxObjective">Objetivo de la sala</label>
+          <textarea id="ctxObjective" rows="2" placeholder="Si lo dejás vacío, se toma tu primer mensaje."></textarea>
+          <p class="hint">Va en cada prompt, aunque la charla sea larga y tu pedido original ya no entre en los últimos 14 mensajes.</p>
+        </div>
+        <div class="field">
           <label for="ctxContext">Contexto del proyecto</label>
           <textarea id="ctxContext" rows="7"></textarea>
           <p class="hint">Lo leen todos los panelistas antes de hablar.</p>
@@ -418,14 +423,19 @@
         <div class="field">
           <label for="ctxDecisions">Decisiones vigentes</label>
           <textarea id="ctxDecisions" rows="4" placeholder="Ej.: Stack: Next.js en Vercel. Nada de cuentas de usuario en el MVP."></textarea>
-          <p class="hint">Se incluyen en cada prompt. Solo cambian si las editás vos: la síntesis nunca las sobrescribe.</p>
+          <p class="hint">Se incluyen en cada prompt como lo único aprobado por vos. Solo cambian si las editás vos: ni la síntesis ni el resumen las tocan.</p>
+        </div>
+        <div class="field">
+          <label for="ctxSummary">Resumen acumulado (lo escribe la IA)</label>
+          <textarea id="ctxSummary" rows="5" placeholder="Se genera solo cuando la conversación supera los últimos 14 mensajes."></textarea>
+          <p class="hint">Resume los mensajes que ya no entran en la ventana: tu pedido, las propuestas de los modelos y lo que sigue abierto. Son recomendaciones, no decisiones. Podés corregirlo o borrarlo; la próxima actualización parte de tu versión.</p>
         </div>
         <div class="field">
           <label for="ctxGlossary">Glosario para la transcripción</label>
           <input type="text" id="ctxGlossary" autocomplete="off" placeholder="Ej.: Krillion, Oberman, Next.js, Railway…">
           <p class="hint">Nombres y jerga que el transcriptor debería escribir bien. En Groq/OpenAI el texto de ayuda se recorta (Groq admite ~224 tokens).</p>
         </div>
-        <p class="note">Cada turno envía al proveedor: contexto + decisiones vigentes + los últimos 14 mensajes de la conversación. Los cambios aplican a la próxima ronda.</p>
+        <p class="note">Cada turno envía al proveedor: objetivo + contexto + decisiones vigentes + resumen acumulado + los últimos 14 mensajes. Cuando la charla es larga, al final de la ronda se hace una llamada extra para actualizar el resumen. Los cambios aplican a la próxima ronda.</p>
       </div>
       <div class="dlg-foot">
         <button id="btnClearHistory" class="btn danger" type="button">Limpiar historial</button>
@@ -696,8 +706,11 @@ LOS 4 TIERS DE RAREZA (Córner desde la derecha):
 3. Gol de Chilena (Violeta - Épica): Cámara lenta, giro 180° en el aire haciendo tijera y remate con fuego pixelado.
 4. ¡GOL OLÍMPICO! (Dorado - Mítica / equivalente a One in a Krillion): Se oscurece el estadio, comba física que se cierra al segundo palo, pega en el poste (¡CLANK!) y entra sin que nadie la toque.
 OBJETIVO DE LA MESA: Que sacar un Gol Olímpico sea extremadamente difícil y prestigioso (doble llave: índice de oscuridad estadístico + ser de los primeros en votarlo en el día) y definir la arquitectura técnica más simple y rentable.`,
+      objective: '',
       decisions: '',
       draft: '',
+      summary: '',
+      summaryUpto: '',
       messages: [{ id: 'm-bienvenida-gol', role: 'system_notice', text: 'Sala "Gol Olímpico" lista. Tocá el micrófono o escribí abajo: los tres roles debaten por turnos leyéndose entre sí.' }]
     },
     {
@@ -707,8 +720,11 @@ OBJETIVO DE LA MESA: Que sacar un Gol Olímpico sea extremadamente difícil y pr
       glossary: 'Next.js, React, Vercel, Railway, MongoDB Atlas, Mercado Libre, pago único, MVP, SaaS, micro-producto',
       context: `PROYECTO: Incubadora de Ideas y Productos Digitales.
 REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, prototipado rápido, alto impacto visual y preferentemente modelos de pago único o mantenimiento diario casi nulo.`,
+      objective: '',
       decisions: '',
       draft: '',
+      summary: '',
+      summaryUpto: '',
       messages: [{ id: 'm-bienvenida-ideas', role: 'system_notice', text: 'Sala general lista para pelotear cualquier proyecto nuevo.' }]
     }
   ]);
@@ -913,7 +929,7 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
   /* ---------------- Validación de salas ---------------- */
   const MSG_ROLES = new Set(['user', 'agent', 'system_notice']);
   const AGENT_IDS = new Set(['gemini', 'claude', 'chatgpt', 'sintesis']);
-  const LIMITS = { name: 120, context: 60000, glossary: 4000, decisions: 20000, draft: 60000, text: 120000, messages: 5000, projects: 500 };
+  const LIMITS = { name: 120, objective: 4000, summary: 20000, context: 60000, glossary: 4000, decisions: 20000, draft: 60000, text: 120000, messages: 5000, projects: 500 };
 
   function str(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
 
@@ -947,10 +963,13 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
       id: typeof p.id === 'string' && p.id.trim() && p.id.length <= 80 ? p.id : '',
       name: hasName ? p.name.trim().slice(0, LIMITS.name) : 'Sala sin nombre',
       roundIndex: clampNum(p.roundIndex, 0, 1e6, 0),
+      objective: str(p.objective, LIMITS.objective),
       context: str(p.context, LIMITS.context),
       glossary: str(p.glossary, LIMITS.glossary),
       decisions: str(p.decisions, LIMITS.decisions),
       draft: str(p.draft, LIMITS.draft),
+      summary: str(p.summary, LIMITS.summary),
+      summaryUpto: typeof p.summaryUpto === 'string' ? p.summaryUpto.slice(0, 80) : '',
       messages: []
     };
     if (!out.id) { out.id = newId('proj'); info.issues.push(`Sala "${out.name}" sin id: le asigné uno nuevo.`); }
@@ -967,7 +986,7 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
       out.messages.push(m);
     }
     if (dropped) info.issues.push(`Sala "${out.name}": descarté ${dropped} mensaje(s) inválido(s).`);
-    if (typeof p.decisions !== 'string' || typeof p.draft !== 'string') info.migrated = true;
+    if (['decisions', 'draft', 'objective', 'summary'].some(k => typeof p[k] !== 'string')) info.migrated = true;
     return out;
   }
 
@@ -1067,7 +1086,7 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
     cancelled: () => 'Cancelado.',
     timeout: e => `Sin respuesta a tiempo (timeout de ${e.timeoutS || '?'} s). Podés subirlo en Ajustes.`,
     network: () => 'No se pudo conectar: sin internet, bloqueo CORS o el proveedor no acepta llamadas directas desde el navegador.',
-    auth: e => `Clave rechazada (${e.status}). Revisala en Conexiones API (o los permisos/crédito de esa cuenta).`,
+    auth: e => `Clave rechazada (${e.status === 400 ? '400, clave inválida' : e.status}). Revisala en Conexiones API (o los permisos/crédito de esa cuenta).`,
     invalid: e => `Pedido inválido (${e.status}): suele ser un ID de modelo inexistente o no habilitado para tu cuenta. Revisalo en Ajustes.`,
     rate: e => e.retryAfter != null && e.retryAfter > MAX_RETRY_AFTER_S
       ? `Límite de uso (429): el proveedor pide esperar ${Math.ceil(e.retryAfter)} s. No espero en silencio: corté este intento. Probá más tarde.`
@@ -1118,7 +1137,9 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
 
   function httpError(provider, res, data, text) {
     const s = res.status;
-    const kind = s === 401 || s === 403 ? 'auth'
+    // Gemini responde 400 (no 401) cuando la clave es inválida: verificado contra la API real.
+    const badKey = s === 400 && /API_KEY_INVALID|API key not valid/i.test(JSON.stringify((data && data.error) || ''));
+    const kind = s === 401 || s === 403 || badKey ? 'auth'
       : s === 429 ? 'rate'
       : s >= 500 ? 'provider'
       : s === 413 ? 'too_large'
@@ -1689,8 +1710,60 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
     const last = history.slice(-HISTORY_LIMIT);
     return last.length ? last.map(m => `[${speakerLabel(m)}]: ${m.text}`).join('\n\n') : '(todavía no hay mensajes)';
   }
+  // Objetivo y decisiones son del usuario; el resumen acumulado lo escribe la IA y no son decisiones.
   function roomBlock(room) {
-    return `CONTEXTO DEL PROYECTO:\n${room.context.trim() || '(sin contexto cargado)'}\n\nDECISIONES VIGENTES (base acordada por el usuario; si proponés cambiar alguna, decilo explícitamente y por qué):\n${room.decisions.trim() || '(ninguna todavía)'}`;
+    return [
+      `OBJETIVO DE LA SALA (lo pidió el usuario; no lo pierdas de vista aunque la charla se haya ido a otro lado):\n${room.objective.trim() || '(no definido)'}`,
+      `CONTEXTO DEL PROYECTO:\n${room.context.trim() || '(sin contexto cargado)'}`,
+      `DECISIONES VIGENTES (aprobadas por el usuario; son la base. Si proponés cambiar alguna, decilo explícitamente y por qué):\n${room.decisions.trim() || '(ninguna todavía)'}`,
+      `RESUMEN ACUMULADO DE LA CHARLA ANTERIOR (escrito por un modelo; contiene propuestas, NO decisiones aprobadas):\n${room.summary.trim() || '(la conversación todavía entra completa en el historial reciente)'}`
+    ].join('\n\n');
+  }
+
+  function summaryPrompt(objective, prevSummary, msgs) {
+    const system = `Mantenés el RESUMEN ACUMULADO de una mesa de debate entre tres roles de IA (${SEATS.map(s => s.role).join(', ')}) y el usuario, que es quien decide. Te paso el resumen anterior y mensajes viejos que ya salieron de la ventana de conversación. Devolvé SOLO el resumen actualizado, en español rioplatense, máximo 250 palabras, con viñetas cortas y estas secciones:
+**Pedido del usuario:** qué pidió, aclaró o descartó (literal cuando importe).
+**Propuestas de los modelos:** recomendaciones y argumentos principales, atribuidos al rol. Son sugerencias, no decisiones.
+**Abierto:** preguntas o desacuerdos sin resolver.
+No inventes decisiones: solo el usuario decide y sus decisiones se guardan aparte. Si el usuario aprobó algo explícitamente, ponelo en "Pedido del usuario" como "el usuario dijo: …". Conservá lo importante del resumen anterior.`;
+    const user = `OBJETIVO DE LA SALA:\n${objective.trim() || '(no definido)'}\n\nRESUMEN ANTERIOR:\n${prevSummary.trim() || '(vacío)'}\n\nMENSAJES A INCORPORAR:\n${msgs.map(m => `[${speakerLabel(m)}]: ${m.text}`).join('\n\n')}\n\n---\nEscribí el resumen actualizado.`;
+    return { system, user };
+  }
+
+  const SUMMARY_MAX_BATCH = 80;
+
+  // Si hay mensajes que ya no entran en los últimos 14 y el resumen no cubre, se actualiza (una llamada extra).
+  async function updateSummary(op, projectId, snap) {
+    const p = getProject(projectId);
+    if (!p) return;
+    const conv = p.messages.filter(m => m.role === 'user' || m.role === 'agent');
+    const outside = conv.slice(0, Math.max(0, conv.length - HISTORY_LIMIT));
+    if (!outside.length) return;
+    const covered = p.summaryUpto ? outside.findIndex(m => m.id === p.summaryUpto) : -1;
+    if (p.summaryUpto && covered === -1 && conv.some(m => m.id === p.summaryUpto)) return; // ya cubre más de lo que salió
+    let fresh = outside.slice(covered + 1);
+    if (!fresh.length) return;
+    const skipped = Math.max(0, fresh.length - SUMMARY_MAX_BATCH);
+    fresh = fresh.slice(-SUMMARY_MAX_BATCH);
+    const native = FALLBACK_ORDER.find(pr => snap.keys[pr]);
+    if (!native) return;
+    op.activeSeat = null;
+    if (App.currentId === projectId) renderBadges();
+    setOpStatus(op, 'Actualizando resumen acumulado…');
+    const { system, user } = summaryPrompt(p.objective || '', p.summary || '', fresh);
+    try {
+      const r = await callWithFallback({ native, snap, system, user, signal: op.ctrl.signal });
+      if (!isLive(op)) return;
+      const target = getProject(projectId);
+      if (!target) return;
+      target.summary = r.text.slice(0, LIMITS.summary);
+      target.summaryUpto = fresh[fresh.length - 1].id;
+      persistNow();
+      if (skipped) appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `El resumen acumulado arrancó con los últimos ${SUMMARY_MAX_BATCH} mensajes viejos; ${skipped} anteriores quedaron afuera.` });
+    } catch (e) {
+      if (!isLive(op) || (e instanceof ApiError && e.kind === 'cancelled')) return;
+      appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `No pude actualizar el resumen acumulado (${describeFailure(e)}). Se reintenta en la próxima ronda.` });
+    }
   }
 
   function seatPrompt(seat, room, history, closeRound) {
@@ -1741,6 +1814,10 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
       openDialog('dlgKeys');
       return;
     }
+    if (!(p.objective || '').trim()) {
+      p.objective = text.slice(0, 600);
+      toast('Guardé este primer mensaje como objetivo de la sala (va en cada prompt). Podés editarlo en Contexto.', { timeout: 6000 });
+    }
     appendMessage(p.id, { role: 'user', text, fromAudio: App.draftAudio.has(p.id) });
     App.draftAudio.delete(p.id);
     p.draft = '';
@@ -1759,7 +1836,7 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
 
     // Foto de todo al arrancar: sala, contexto, decisiones, historial, claves y configuración.
     const snap = { keys: Keys.snapshot(), cfg: structuredClone(App.config) };
-    const room = { context: p.context || '', decisions: p.decisions || '' };
+    const room = { objective: p.objective || '', context: p.context || '', decisions: p.decisions || '', summary: p.summary || '' };
     const history = p.messages.filter(m => m.role === 'user' || m.role === 'agent').map(m => ({ ...m }));
     const order = kind === 'round' ? roundOrder(p, snap.cfg) : [];
     const synth = kind === 'synth' || snap.cfg.synthesis;
@@ -1812,6 +1889,7 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
           appendMessage(projectId, { role: 'system_notice', level: 'error', text: `⚠️ ${label}: ${describeFailure(e)}` });
         }
       }
+      if (isLive(op)) await updateSummary(op, projectId, snap);
     } finally {
       if (App.debate === op) {
         App.debate = null;
@@ -2142,7 +2220,7 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
       id: newId('proj'), name: name.slice(0, LIMITS.name), roundIndex: 0,
       glossary: 'Next.js, React, Railway, Vercel, MVP',
       context: `PROYECTO: ${name}\nOBJETIVO: Definir diseño, arquitectura técnica simple y un plan de ejecución rápido.`,
-      decisions: '', draft: '',
+      objective: '', decisions: '', draft: '', summary: '', summaryUpto: '',
       messages: [{ id: newId('m'), role: 'system_notice', text: `Sala "${name}" creada. Abrí "Contexto" arriba para cargar detalles, o mandá directo tu idea.` }]
     };
     current().draft = $('txtInput').value;
@@ -2158,6 +2236,8 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     const d = $('dlgContext');
     d.dataset.projectId = p.id;
     $('ctxName').value = p.name;
+    $('ctxObjective').value = p.objective || '';
+    $('ctxSummary').value = p.summary || '';
     $('ctxContext').value = p.context || '';
     $('ctxDecisions').value = p.decisions || '';
     $('ctxGlossary').value = p.glossary || '';
@@ -2169,7 +2249,11 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     const p = getProject(d.dataset.projectId);
     if (!p) { closeDialog(d); return; }
     p.name = $('ctxName').value.trim().slice(0, LIMITS.name) || p.name;
+    p.objective = $('ctxObjective').value.slice(0, LIMITS.objective);
     p.context = $('ctxContext').value.slice(0, LIMITS.context);
+    const newSummary = $('ctxSummary').value.slice(0, LIMITS.summary);
+    if (!newSummary.trim()) p.summaryUpto = ''; // borrado a mano: se rearma desde cero
+    p.summary = newSummary;
     p.decisions = $('ctxDecisions').value.slice(0, LIMITS.decisions);
     p.glossary = $('ctxGlossary').value.trim().slice(0, LIMITS.glossary);
     persistNow();
@@ -2183,9 +2267,11 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     const p = getProject(d.dataset.projectId);
     if (!p) return;
     if (roomBusy(p.id)) { toast(`No se puede limpiar: ${busyReason(p.id)}`, { level: 'warn' }); return; }
-    if (!window.confirm(`¿Limpiar todos los mensajes de «${p.name}»? El contexto, las decisiones y el glosario se mantienen.`)) return;
-    p.messages = [{ id: newId('m'), role: 'system_notice', text: 'Historial reiniciado. Contexto y decisiones vigentes activos.' }];
+    if (!window.confirm(`¿Limpiar todos los mensajes de «${p.name}»? Se borra también el resumen acumulado; el objetivo, el contexto, las decisiones y el glosario se mantienen.`)) return;
+    p.messages = [{ id: newId('m'), role: 'system_notice', text: 'Historial reiniciado. Objetivo, contexto y decisiones vigentes activos.' }];
     p.roundIndex = 0;
+    p.summary = '';
+    p.summaryUpto = '';
     persistNow();
     if (p.id === App.currentId) renderRoom();
     closeDialog(d);
@@ -2283,7 +2369,8 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
 
   /* ---------------- Exportar ---------------- */
   function buildMarkdown(p) {
-    const lines = [`# ${p.name}`, '', '## Contexto', p.context || '(vacío)', '', '## Decisiones vigentes', p.decisions || '(ninguna)', '', '## Conversación', ''];
+    const lines = [`# ${p.name}`, '', '## Objetivo', p.objective || '(no definido)', '', '## Contexto', p.context || '(vacío)', '', '## Decisiones vigentes (aprobadas por vos)', p.decisions || '(ninguna)', '',
+      '## Resumen acumulado (escrito por la IA, no son decisiones)', p.summary || '(vacío)', '', '## Conversación', ''];
     for (const m of p.messages) {
       if (m.role === 'user') lines.push(`### Vos${m.fromAudio ? ' (audio)' : ''}${m.time ? ' · ' + m.time : ''}`, m.text, '');
       if (m.role === 'agent') {

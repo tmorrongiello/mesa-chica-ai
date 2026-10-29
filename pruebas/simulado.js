@@ -572,6 +572,56 @@ async function run() {
     await ctx.close();
   });
 
+  await test('Gemini: clave inválida llega como 400 (comportamiento real) y se informa como clave rechazada', async () => {
+    const { ctx, page, go } = await newPage({ cfg: { synthesis: false } });
+    await go({ gemini: () => ({ status: 400, body: { error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT', details: [{ reason: 'API_KEY_INVALID' }] } } }) });
+    await send(page, 'x');
+    await waitIdle(page);
+    const n = (await notices(page)).join('\n');
+    assert(n.includes('Clave rechazada (400, clave inválida)') && !n.includes('ID de modelo'), n);
+    await ctx.close();
+  });
+
+  await test('conversación larga: objetivo fijo, resumen acumulado, decisiones intactas', async () => {
+    const { ctx, page, go } = await newPage();
+    const isSummary = e => e.body.includes('RESUMEN ACUMULADO de una mesa');
+    let sums = 0;
+    const log = await go({ claude: e => (isSummary(e) ? { body: ok.claude(`RESUMEN-SIM-${++sums}`) } : null) });
+    await page.evaluate(() => { current().decisions = 'DECISION-USUARIO'; });
+    await send(page, 'OBJETIVO-ORIGINAL: un juego diario de fútbol');
+    await waitIdle(page);
+    assert(await page.evaluate(() => current().objective.startsWith('OBJETIVO-ORIGINAL')), 'primer mensaje → objetivo');
+    for (let i = 0; i < 5; i++) {
+      await page.fill('#txtInput', `seguimiento ${i}`);
+      await page.click('#btnSend');
+      await waitIdle(page);
+    }
+    const summaryCalls = log.filter(isSummary);
+    assert(summaryCalls.length >= 3, `llamadas de resumen: ${summaryCalls.length}`);
+    assert(JSON.parse(summaryCalls[0].body).messages[0].content.includes('OBJETIVO-ORIGINAL: un juego'), 'el primer resumen incorpora el pedido original que salió de la ventana');
+    assert(JSON.parse(summaryCalls[1].body).messages[0].content.includes('RESUMEN-SIM-1'), 'cada resumen parte del anterior');
+    const st = await page.evaluate(() => {
+      const p = current(); const conv = p.messages.filter(m => m.role !== 'system_notice');
+      const outside = conv.slice(0, conv.length - 14);
+      return { summary: p.summary, upto: p.summaryUpto, lastOutside: outside[outside.length - 1].id, decisions: p.decisions, n: conv.length };
+    });
+    assert(st.n === 30, 'mensajes: ' + st.n);
+    assert(st.summary === `RESUMEN-SIM-${sums}`, 'resumen guardado');
+    assert(st.upto === st.lastOutside, 'el resumen cubre exactamente lo que salió de la ventana');
+    assert(st.decisions === 'DECISION-USUARIO', 'decisiones intactas');
+    // El último turno de panelista: objetivo + resumen + decisiones, y solo 14 mensajes recientes.
+    const lastTurn = log.filter(l => l.prov === 'gemini').pop();
+    const body = JSON.parse(lastTurn.body);
+    const sys = body.systemInstruction.parts[0].text, usr = body.contents[0].parts[0].text;
+    assert(sys.includes('OBJETIVO-ORIGINAL') && sys.includes('RESUMEN-SIM-') && sys.includes('DECISION-USUARIO'), 'prompt con objetivo, resumen y decisiones');
+    assert(sys.indexOf('DECISIONES VIGENTES (aprobadas') < sys.indexOf('RESUMEN ACUMULADO'), 'decisiones y resumen en secciones separadas');
+    assert((usr.match(/^\[/gm) || []).length === 14, 'historial reciente = 14 mensajes');
+    assert(!usr.includes('OBJETIVO-ORIGINAL'), 'el pedido original ya no está en la ventana, solo en objetivo/resumen');
+    await page.click('#btnContext');
+    assert((await page.inputValue('#ctxSummary')).startsWith('RESUMEN-SIM-'), 'resumen visible y editable');
+    await ctx.close();
+  });
+
   /* ----- Audio (Chromium con micrófono falso) ----- */
   const audioInit = () => {
     const orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
