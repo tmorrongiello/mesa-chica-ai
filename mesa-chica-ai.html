@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<!--
+  MESA CHICA AI — v2 (cambios respecto a v1)
+  1. FIX: las respuestas de una ronda quedan en la sala donde arrancó, aunque cambies de sala a mitad.
+  2. NUEVO: turno final de SÍNTESIS opcional (acuerdos, desacuerdo clave, decisión, próximo paso).
+  3. NUEVO: rotación del orden de turnos por ronda (evita que Gemini siempre enmarque el debate).
+  4. CAMBIO: regla de debate menos forzada ("si coincidís, decilo en 1 línea y aportá algo nuevo").
+  5. CAMBIO: nombres de modelos configurables en la Bóveda (default Claude: claude-sonnet-5-5).
+  6. SEGURIDAD: la key de Gemini viaja en header (x-goog-api-key), no en la URL.
+  7. FIX: "Frenar" cancela de verdad los requests en curso (AbortController).
+  8. FIX: parseo robusto de respuestas (Gemini con varias parts / thinking, Claude con varios bloques).
+  9. FIX: en celular, Enter hace salto de línea (no envía). En desktop, Enter envía.
+  10. FIX: guardado con try/catch (localStorage lleno), export con fallback a descarga .md.
+  11. UX: aviso claro cuando un panelista es "simulado" por otro modelo (modo respaldo).
+-->
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Mesa Chica AI — Brainstorm Studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-main: #090d16;
+      --bg-card: #111827;
+      --bg-input: #1f2937;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: var(--bg-main);
+      color: #f3f4f6;
+      margin: 0;
+      padding: 0;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 9999px; }
+
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+      70% { transform: scale(1.05); box-shadow: 0 0 0 14px rgba(239, 68, 68, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    }
+    .recording-pulse { animation: pulse-ring 1.5s infinite; }
+    .msg-enter { animation: slideUp 0.22s ease-out forwards; }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body class="select-none">
+
+  <!-- HEADER -->
+  <header class="bg-gray-900/95 border-b border-gray-800 px-3 py-2.5 flex items-center justify-between shrink-0 z-20">
+    <div class="flex items-center gap-2 min-w-0">
+      <button id="btnProjectsModal" class="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 active:scale-95 transition px-3 py-1.5 rounded-xl border border-gray-700 max-w-[210px] sm:max-w-xs">
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0"></span>
+        <span id="currentProjectTitle" class="font-semibold text-sm truncate">Gol Olímpico (Krillion)</span>
+        <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+    </div>
+
+    <div class="flex items-center gap-1.5">
+      <button id="btnContextModal" title="Contexto y Reglas del Proyecto" class="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 flex items-center gap-1.5 text-xs font-medium">
+        <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        <span class="hidden sm:inline">Contexto</span>
+      </button>
+
+      <button id="btnExport" title="Copiar debate completo en Markdown" class="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 text-xs font-medium">
+        <svg class="w-4 h-4 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+      </button>
+
+      <button id="btnKeysModal" title="Bóveda Local de Credenciales" class="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 flex items-center gap-1 text-xs font-medium relative">
+        <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        <span id="keyStatusDot" class="w-2 h-2 rounded-full bg-amber-400 absolute -top-0.5 -right-0.5"></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- BARRA DE ORDEN DE TURNO (se renderiza dinámicamente) -->
+  <div class="bg-gray-900/60 border-b border-gray-800/80 px-3 py-1.5 flex items-center justify-between text-xs shrink-0">
+    <div id="badgesBar" class="flex items-center gap-1.5 overflow-x-auto py-0.5"></div>
+    <button id="btnStopRound" class="hidden bg-red-900/80 hover:bg-red-800 text-red-200 px-2.5 py-0.5 rounded-md border border-red-700 text-xs font-semibold shrink-0 ml-2">
+      Frenar
+    </button>
+  </div>
+
+  <!-- CHAT -->
+  <main id="chatContainer" class="flex-1 overflow-y-auto px-3 py-4 space-y-3 select-text"></main>
+
+  <!-- ESTADO EN VIVO -->
+  <div id="liveStatusBanner" class="hidden bg-gray-900/95 border-t border-gray-800 px-4 py-2 text-xs text-amber-300 flex items-center justify-between shrink-0">
+    <div class="flex items-center gap-2 min-w-0">
+      <svg class="w-4 h-4 animate-spin text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+      </svg>
+      <span id="liveStatusText" class="truncate">Transcribiendo audio...</span>
+    </div>
+    <span id="recordingTimer" class="mono font-semibold text-red-400 hidden">00:00</span>
+  </div>
+
+  <!-- INPUT -->
+  <footer class="bg-gray-900 border-t border-gray-800 p-2.5 shrink-0 z-20">
+    <div class="max-w-4xl mx-auto flex flex-col gap-2">
+
+      <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 text-[11px] text-gray-400">
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" id="chkAutoSendAudio" class="rounded bg-gray-800 border-gray-700 text-emerald-500 focus:ring-0">
+          <span>Disparar debate al terminar de transcribir</span>
+        </label>
+        <div class="flex items-center gap-3">
+          <button id="btnSynthNow" class="text-violet-400 hover:underline font-medium">Sintetizar</button>
+          <button id="btnSingleContinue" class="text-sky-400 hover:underline font-medium">+1 ronda</button>
+        </div>
+      </div>
+
+      <div class="flex items-end gap-2">
+        <button id="btnRecord" title="Tocar para grabar nota de voz" class="w-12 h-12 rounded-2xl bg-red-600 hover:bg-red-500 active:scale-95 text-white flex items-center justify-center shrink-0 shadow-lg transition">
+          <svg id="iconMic" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+          </svg>
+          <svg id="iconStop" class="w-6 h-6 hidden" fill="currentColor" viewBox="0 0 24 24">
+            <rect x="6" y="6" width="12" height="12" rx="2"/>
+          </svg>
+        </button>
+
+        <div class="flex-1 bg-gray-800 rounded-2xl border border-gray-700 focus-within:border-sky-500 px-3 py-2 flex items-end">
+          <textarea id="txtInput" rows="2" placeholder="Tocá el micrófono para largar tu audio o escribí acá..." class="w-full bg-transparent text-sm text-gray-100 placeholder-gray-500 focus:outline-none resize-none max-h-32 leading-snug select-text"></textarea>
+        </div>
+
+        <button id="btnSend" class="w-12 h-12 rounded-2xl bg-sky-600 hover:bg-sky-500 active:scale-95 text-white flex items-center justify-center shrink-0 shadow-lg transition">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M5 12h14M12 5l7 7-7 7"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- MODAL 1: BÓVEDA -->
+  <div id="modalKeys" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl max-w-lg w-full max-h-[90dvh] overflow-y-auto p-5 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-gray-800 pb-3">
+        <div class="flex items-center gap-2">
+          <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+          <h2 class="font-bold text-base">Bóveda Local de Conexiones</h2>
+        </div>
+        <button id="closeKeysModal" class="text-gray-400 hover:text-white p-1">✕</button>
+      </div>
+
+      <div class="bg-emerald-950/40 border border-emerald-800/60 rounded-xl p-3 text-xs text-emerald-200 leading-relaxed">
+        🔒 Tus claves se guardan solo en el <code>localStorage</code> de este navegador y viajan directo a cada proveedor (Google, Anthropic, OpenAI, Groq), sin servidor intermedio.
+        <span class="block mt-1 text-emerald-300/80">Ojo: no cargues tus claves en un dispositivo compartido, y no publiques esta página con claves precargadas.</span>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block font-semibold text-blue-300 mb-1">1. Google Gemini API Key (debate + transcripción)</label>
+          <input type="password" id="keyGemini" placeholder="AIzaSy..." class="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-gray-100 mono focus:outline-none focus:border-blue-500 select-text">
+          <p class="text-[11px] text-gray-400 mt-0.5">Se consigue en <em>aistudio.google.com</em>.</p>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-amber-300 mb-1">2. Anthropic Claude API Key</label>
+          <input type="password" id="keyClaude" placeholder="sk-ant-api03-..." class="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-gray-100 mono focus:outline-none focus:border-amber-500 select-text">
+        </div>
+
+        <div>
+          <label class="block font-semibold text-emerald-300 mb-1">3. OpenAI API Key (debate + Whisper)</label>
+          <input type="password" id="keyOpenai" placeholder="sk-proj-..." class="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-gray-100 mono focus:outline-none focus:border-emerald-500 select-text">
+        </div>
+
+        <div>
+          <label class="block font-semibold text-purple-300 mb-1">4. Groq API Key (opcional — Whisper rápido)</label>
+          <input type="password" id="keyGroq" placeholder="gsk_..." class="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-gray-100 mono focus:outline-none focus:border-purple-500 select-text">
+          <p class="text-[11px] text-gray-400 mt-0.5">Clave de <em>console.groq.com</em>. Si está cargada, se usa primero para transcribir.</p>
+        </div>
+
+        <hr class="border-gray-800 my-2">
+
+        <!-- Modelos configurables -->
+        <details class="bg-gray-800/50 border border-gray-700 rounded-xl p-3">
+          <summary class="font-semibold text-gray-200 cursor-pointer">Modelos (editables si alguno queda viejo)</summary>
+          <div class="grid grid-cols-1 gap-2 mt-3">
+            <label class="block"><span class="text-blue-300">Gemini</span>
+              <input type="text" id="modelGemini" class="w-full mt-0.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 mono text-gray-100 select-text"></label>
+            <label class="block"><span class="text-amber-300">Claude</span>
+              <input type="text" id="modelClaude" class="w-full mt-0.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 mono text-gray-100 select-text"></label>
+            <label class="block"><span class="text-emerald-300">OpenAI</span>
+              <input type="text" id="modelOpenai" class="w-full mt-0.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 mono text-gray-100 select-text"></label>
+            <label class="block"><span class="text-purple-300">Groq (chat)</span>
+              <input type="text" id="modelGroq" class="w-full mt-0.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 mono text-gray-100 select-text"></label>
+            <button id="btnResetModels" class="justify-self-start text-[11px] text-gray-400 hover:text-white underline">Restaurar defaults</button>
+          </div>
+        </details>
+
+        <label class="flex items-start gap-2.5 bg-gray-800/70 p-3 rounded-xl border border-gray-700 cursor-pointer">
+          <input type="checkbox" id="chkFallbackMode" checked class="mt-0.5 rounded bg-gray-900 border-gray-600 text-sky-500">
+          <div>
+            <span class="font-semibold text-gray-200 block">Respaldo: simular panelistas faltantes</span>
+            <span class="text-gray-400 text-[11px]">Si falta la clave de un modelo, otro modelo actúa su rol. Sirve para probar, pero <strong class="text-gray-300">no es un debate real entre modelos distintos</strong>: los sesgos son los mismos. Las tarjetas simuladas se marcan con "SIMULADO".</span>
+          </div>
+        </label>
+
+        <label class="flex items-start gap-2.5 bg-gray-800/70 p-3 rounded-xl border border-gray-700 cursor-pointer">
+          <input type="checkbox" id="chkRotate" checked class="mt-0.5 rounded bg-gray-900 border-gray-600 text-sky-500">
+          <div>
+            <span class="font-semibold text-gray-200 block">Rotar quién arranca cada ronda</span>
+            <span class="text-gray-400 text-[11px]">Evita que el mismo modelo enmarque siempre la discusión.</span>
+          </div>
+        </label>
+
+        <label class="flex items-start gap-2.5 bg-gray-800/70 p-3 rounded-xl border border-gray-700 cursor-pointer">
+          <input type="checkbox" id="chkSynthesis" checked class="mt-0.5 rounded bg-gray-900 border-gray-600 text-violet-500">
+          <div>
+            <span class="font-semibold text-gray-200 block">Cerrar cada ronda con SÍNTESIS</span>
+            <span class="text-gray-400 text-[11px]">Un moderador neutral resume acuerdos, el desacuerdo clave, una decisión y el próximo paso.</span>
+          </div>
+        </label>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2">
+        <button id="btnClearKeys" class="px-3 py-2 rounded-xl bg-red-950/60 hover:bg-red-900/80 text-red-300 border border-red-800 text-xs font-medium">Borrar claves</button>
+        <button id="btnSaveKeys" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold">Guardar en mi dispositivo</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: PROYECTOS -->
+  <div id="modalProjects" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl max-w-md w-full max-h-[85dvh] flex flex-col p-5 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-gray-800 pb-3">
+        <h2 class="font-bold text-base">Mis Salas de Brainstorm</h2>
+        <button id="closeProjectsModal" class="text-gray-400 hover:text-white p-1">✕</button>
+      </div>
+      <div id="projectsList" class="flex-1 overflow-y-auto space-y-2 pr-1"></div>
+      <div class="border-t border-gray-800 pt-3 space-y-2">
+        <input type="text" id="newProjectName" placeholder="Nombre del nuevo proyecto (ej. App Figuritas, Zona Warnes...)" class="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500 select-text">
+        <button id="btnCreateProject" class="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs transition">
+          + Crear Nueva Sala de Proyecto
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: CONTEXTO -->
+  <div id="modalContext" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl max-w-lg w-full max-h-[90dvh] overflow-y-auto p-5 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-gray-800 pb-3">
+        <h2 class="font-bold text-base">Contexto Base y Diccionario</h2>
+        <button id="closeContextModal" class="text-gray-400 hover:text-white p-1">✕</button>
+      </div>
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block font-semibold text-amber-300 mb-1">Contexto Maestro del Proyecto (lo leen todos antes de hablar)</label>
+          <textarea id="txtProjectContext" rows="7" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-3 text-gray-100 leading-relaxed focus:outline-none focus:border-amber-500 select-text"></textarea>
+        </div>
+        <div>
+          <label class="block font-semibold text-sky-300 mb-1">Diccionario para Transcripción (palabras clave, jerga, nombres)</label>
+          <input type="text" id="txtAudioGlossary" class="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-gray-100 focus:outline-none focus:border-sky-500 select-text" placeholder="Ej: Krillion, Gol Olímpico, Oberman, Next.js, Railway, metegol...">
+          <p class="text-[11px] text-gray-400 mt-1">El transcriptor recibe esta lista antes de escuchar tu voz para escribir bien estos términos.</p>
+        </div>
+      </div>
+      <div class="flex justify-between items-center pt-2">
+        <button id="btnClearChat" class="px-3 py-2 rounded-xl bg-gray-800 hover:bg-red-950/60 text-red-400 border border-gray-700 text-xs">Limpiar historial de esta sala</button>
+        <button id="btnSaveContext" class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-gray-950 font-bold text-xs">Guardar Contexto</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /********************************************************************
+     * DEFAULTS
+     ********************************************************************/
+    const DEFAULT_MODELS = {
+      gemini: 'gemini-2.5-flash',
+      claude: 'claude-sonnet-5-5',
+      openai: 'gpt-4o',
+      groq: 'llama-3.3-70b-versatile'
+    };
+
+    const DEFAULT_SETTINGS = { rotate: true, synthesis: true };
+
+    const DEFAULT_PROJECTS = [
+      {
+        id: 'gol-olimpico',
+        name: 'Gol Olímpico (Krillion Fútbol)',
+        roundIndex: 0,
+        glossary: 'Krillion, One in a Krillion, Gol Olímpico, Gol de Chilena, Gol de Cabeza, Centro al área, Gustavo Oberman, Lonie Paxton, Sasha Kaun, Pixel Art, 8-bit, Sensible Soccer, Next.js, React, Railway, Vercel',
+        context: `PROYECTO: "GOL OLÍMPICO" (Juego web diario de trivia de fútbol estilo Krillion.io).
+ESTÉTICA DEFINIDA: Pixel Art / 8-bit retro (320x190 escalado al píxel) con jugadorcitos que mueven las piernitas cuadro por cuadro. Interfaz 100% limpia de producción (cero textos técnicos en pantalla).
+LOS 4 TIERS DE RAREZA (Córner desde la derecha):
+1. Centro al Área (Blanco - Común): Despeja el defensor en el primer palo.
+2. Gol de Cabeza (Verde - Rara): Centro al punto penal y frentazo del 9.
+3. Gol de Chilena (Violeta - Épica): Cámara lenta, giro 180° en el aire haciendo tijera y remate con fuego pixelado.
+4. ¡GOL OLÍMPICO! (Dorado - Mítica / equivalente a One in a Krillion): Se oscurece el estadio, comba física que se cierra al segundo palo, pega en el poste (¡CLANK!) y entra sin que nadie la toque.
+OBJETIVO DE LA MESA: Que sacar un Gol Olímpico sea extremadamente difícil y prestigioso (doble llave: índice de oscuridad estadístico + ser de los primeros en votarlo en el día) y definir la arquitectura técnica más simple y rentable.`,
+        messages: [
+          { role: 'system_notice', text: 'Sala "Gol Olímpico" lista. Tocá el micrófono rojo para mandar tu audio o escribí abajo. Gemini, Claude y ChatGPT van a debatir por turnos leyéndose entre sí.' }
+        ]
+      },
+      {
+        id: 'nuevo-brainstorm',
+        name: 'Ideas Generales / Nuevos Proyectos',
+        roundIndex: 0,
+        glossary: 'Next.js, React, Vercel, Railway, MongoDB Atlas, Mercado Libre, pago único, MVP, SaaS, micro-producto',
+        context: `PROYECTO: Incubadora de Ideas y Productos Digitales.
+REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, prototipado rápido, alto impacto visual y preferentemente modelos de pago único o mantenimiento diario casi nulo.`,
+        messages: [
+          { role: 'system_notice', text: 'Sala general lista para pelotear cualquier proyecto nuevo con los 3 modelos.' }
+        ]
+      }
+    ];
+
+    const AGENTS = [
+      {
+        id: 'gemini', name: 'GEMINI', subtitle: 'Game Design, Prototipado & UX', keyName: 'gemini',
+        colorBg: 'bg-blue-950/40', colorBorder: 'border-blue-800/70', colorText: 'text-blue-300',
+        badgeCls: 'bg-blue-950/80 border-blue-700/60 text-blue-300', dotCls: 'bg-blue-400',
+        rolePrompt: `Sos [GEMINI], Director Creativo, Diseñador de Sistemas de Juego y Especialista en Experiencia de Usuario. Hablás en español rioplatense natural, directo y al hueso.`
+      },
+      {
+        id: 'claude', name: 'CLAUDE', subtitle: 'Arquitectura, Frontend & Simplicidad', keyName: 'claude',
+        colorBg: 'bg-amber-950/40', colorBorder: 'border-amber-800/70', colorText: 'text-amber-300',
+        badgeCls: 'bg-amber-950/80 border-amber-700/60 text-amber-300', dotCls: 'bg-amber-400',
+        rolePrompt: `Sos [CLAUDE], Arquitecto de Software Senior (React/Next.js/Clean Code) y Guardián de la Simplicidad Técnica. Odiás la sobreingeniería. Hablás en español rioplatense directo y crítico.`
+      },
+      {
+        id: 'chatgpt', name: 'CHATGPT', subtitle: 'Datos, Fórmulas & Backend', keyName: 'openai',
+        colorBg: 'bg-emerald-950/40', colorBorder: 'border-emerald-800/70', colorText: 'text-emerald-300',
+        badgeCls: 'bg-emerald-950/80 border-emerald-700/60 text-emerald-300', dotCls: 'bg-emerald-400',
+        rolePrompt: `Sos [CHATGPT], Especialista en Algoritmos Matemáticos, Estructuras de Datos, Scraping y Lógica de Negocio. Buscás casos borde donde la matemática falle. Hablás en español rioplatense claro y filoso.`
+      }
+    ];
+
+    const SYNTH_AGENT = {
+      id: 'sintesis', name: 'SÍNTESIS', subtitle: 'Moderador neutral',
+      colorBg: 'bg-violet-950/40', colorBorder: 'border-violet-700/70', colorText: 'text-violet-300'
+    };
+
+    let state = {
+      projects: [],
+      currentProjectId: 'gol-olimpico',
+      keys: { gemini: '', claude: '', openai: '', groq: '', fallback: true },
+      models: { ...DEFAULT_MODELS },
+      settings: { ...DEFAULT_SETTINGS },
+      isRecording: false,
+      isDebating: false,
+      abortController: null
+    };
+
+    const isTouch = window.matchMedia('(pointer: coarse)').matches;
+
+    /********************************************************************
+     * PERSISTENCIA
+     ********************************************************************/
+    function readJSON(key) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) { return null; }
+    }
+
+    function writeJSON(key, value) {
+      try {
+        localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+        return true;
+      } catch (e) {
+        alert('No se pudo guardar en este navegador (¿almacenamiento lleno?). Exportá el debate y limpiá alguna sala vieja.');
+        return false;
+      }
+    }
+
+    function loadState() {
+      const savedProjects = readJSON('mesachica_projects_v1');
+      state.projects = Array.isArray(savedProjects) && savedProjects.length ? savedProjects : structuredClone(DEFAULT_PROJECTS);
+      state.projects.forEach(p => { if (typeof p.roundIndex !== 'number') p.roundIndex = 0; });
+
+      let savedCurrent = null;
+      try { savedCurrent = localStorage.getItem('mesachica_current_proj_v1'); } catch (e) {}
+      if (savedCurrent && state.projects.some(p => p.id === savedCurrent)) {
+        state.currentProjectId = savedCurrent;
+      } else {
+        state.currentProjectId = state.projects[0].id;
+      }
+
+      const savedKeys = readJSON('mesachica_keys_v1');
+      if (savedKeys) state.keys = { ...state.keys, ...savedKeys };
+
+      const savedModels = readJSON('mesachica_models_v1');
+      if (savedModels) state.models = { ...DEFAULT_MODELS, ...savedModels };
+
+      const savedSettings = readJSON('mesachica_settings_v1');
+      if (savedSettings) state.settings = { ...DEFAULT_SETTINGS, ...savedSettings };
+
+      updateKeyIndicator();
+      renderCurrentProject();
+    }
+
+    function saveProjects() {
+      writeJSON('mesachica_projects_v1', state.projects);
+      writeJSON('mesachica_current_proj_v1', state.currentProjectId);
+    }
+
+    function saveKeys() {
+      writeJSON('mesachica_keys_v1', state.keys);
+      writeJSON('mesachica_models_v1', state.models);
+      writeJSON('mesachica_settings_v1', state.settings);
+      updateKeyIndicator();
+    }
+
+    function getProject(id) {
+      return state.projects.find(p => p.id === id) || null;
+    }
+
+    function getCurrentProject() {
+      return getProject(state.currentProjectId) || state.projects[0];
+    }
+
+    function hasAnyKey() {
+      return Boolean(state.keys.gemini || state.keys.claude || state.keys.openai || state.keys.groq);
+    }
+
+    function updateKeyIndicator() {
+      const dot = document.getElementById('keyStatusDot');
+      dot.className = `w-2.5 h-2.5 rounded-full absolute -top-0.5 -right-0.5 ${hasAnyKey() ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`;
+    }
+
+    /********************************************************************
+     * ORDEN DE TURNOS + BADGES
+     ********************************************************************/
+    function getRoundOrder(proj) {
+      if (!state.settings.rotate) return AGENTS.slice();
+      const start = (proj.roundIndex || 0) % AGENTS.length;
+      return AGENTS.slice(start).concat(AGENTS.slice(0, start));
+    }
+
+    function renderBadges(activeId = null) {
+      const proj = getCurrentProject();
+      const order = getRoundOrder(proj);
+      const bar = document.getElementById('badgesBar');
+      let html = `<span class="text-gray-500 font-medium mr-1 shrink-0">Ronda:</span>`;
+      order.forEach((a, i) => {
+        const active = a.id === activeId ? 'ring-2 ring-white scale-105' : '';
+        html += `<span class="px-2 py-0.5 rounded-md border font-medium flex items-center gap-1 shrink-0 transition ${a.badgeCls} ${active}">
+          <span class="w-1.5 h-1.5 rounded-full ${a.dotCls}"></span> ${i + 1}. ${a.name.charAt(0) + a.name.slice(1).toLowerCase()}
+        </span>`;
+        if (i < order.length - 1) html += `<span class="text-gray-600 shrink-0">→</span>`;
+      });
+      if (state.settings.synthesis) {
+        const active = activeId === 'sintesis' ? 'ring-2 ring-white scale-105' : '';
+        html += `<span class="text-gray-600 shrink-0">→</span><span class="px-2 py-0.5 rounded-md border font-medium shrink-0 bg-violet-950/80 border-violet-700/60 text-violet-300 ${active}">Síntesis</span>`;
+      }
+      bar.innerHTML = html;
+    }
+
+    /********************************************************************
+     * RENDER CHAT
+     ********************************************************************/
+    function renderCurrentProject() {
+      const proj = getCurrentProject();
+      document.getElementById('currentProjectTitle').textContent = proj.name;
+      const container = document.getElementById('chatContainer');
+      container.innerHTML = '';
+      proj.messages.forEach(m => container.appendChild(createMessageElement(m)));
+      renderBadges();
+      scrollToBottom();
+    }
+
+    function createMessageElement(m) {
+      const div = document.createElement('div');
+      div.className = 'msg-enter';
+
+      if (m.role === 'system_notice') {
+        div.innerHTML = `
+          <div class="max-w-xl mx-auto text-center my-2 px-3 py-2 rounded-xl bg-gray-800/60 border border-gray-700/70 text-xs text-gray-400">
+            ${escapeHtml(m.text)}
+          </div>`;
+        return div;
+      }
+
+      if (m.role === 'user') {
+        div.innerHTML = `
+          <div class="flex justify-end">
+            <div class="max-w-[88%] sm:max-w-[75%] bg-sky-600/25 border border-sky-500/50 rounded-2xl rounded-tr-sm px-3.5 py-2.5 text-sm text-gray-100 shadow">
+              <div class="flex items-center justify-between gap-3 mb-1">
+                <span class="text-[11px] font-bold uppercase tracking-wider text-sky-300">Vos ${m.fromAudio ? '🎙️ (Audio)' : ''}</span>
+                <span class="text-[10px] text-gray-400">${escapeHtml(m.time || '')}</span>
+              </div>
+              <div class="whitespace-pre-wrap leading-relaxed">${formatMarkdownLight(m.text)}</div>
+            </div>
+          </div>`;
+        return div;
+      }
+
+      const agent = m.agentId === 'sintesis' ? SYNTH_AGENT : (AGENTS.find(a => a.id === m.agentId) || AGENTS[0]);
+      const simulatedTag = m.simulated
+        ? `<span class="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">SIMULADO</span>`
+        : '';
+      div.innerHTML = `
+        <div class="flex justify-start">
+          <div class="w-full max-w-[94%] sm:max-w-[82%] ${agent.colorBg} border ${agent.colorBorder} rounded-2xl rounded-tl-sm px-3.5 py-2.5 text-sm text-gray-100 shadow">
+            <div class="flex items-center justify-between gap-2 mb-1.5 border-b border-white/10 pb-1">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="font-bold text-xs tracking-wide ${agent.colorText}">${agent.name}</span>
+                ${simulatedTag}
+                <span class="text-[11px] text-gray-400 hidden sm:inline truncate">• ${agent.subtitle}</span>
+              </div>
+              <span class="text-[10px] text-gray-400 mono shrink-0">${escapeHtml(m.via || '')}</span>
+            </div>
+            <div class="whitespace-pre-wrap leading-relaxed text-[13.5px] text-gray-200">${formatMarkdownLight(m.text)}</div>
+          </div>
+        </div>`;
+      return div;
+    }
+
+    // FIX: el mensaje va a la sala indicada (la de origen de la ronda), no a la que esté abierta
+    function appendMessage(msgObj, projectId = state.currentProjectId) {
+      const proj = getProject(projectId);
+      if (!proj) return; // la sala fue borrada durante la ronda
+      proj.messages.push(msgObj);
+      saveProjects();
+      if (projectId === state.currentProjectId) {
+        document.getElementById('chatContainer').appendChild(createMessageElement(msgObj));
+        scrollToBottom();
+      }
+    }
+
+    function scrollToBottom() {
+      const container = document.getElementById('chatContainer');
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+      return String(str || '').replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
+    }
+
+    function formatMarkdownLight(str) {
+      let safe = escapeHtml(str);
+      safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>');
+      safe = safe.replace(/`([^`]+)`/g, '<code class="mono bg-black/40 px-1.5 py-0.5 rounded text-amber-300 text-xs">$1</code>');
+      return safe;
+    }
+
+    /********************************************************************
+     * BANNER DE ESTADO
+     ********************************************************************/
+    const liveStatusBanner = document.getElementById('liveStatusBanner');
+    const liveStatusText = document.getElementById('liveStatusText');
+    const recordingTimer = document.getElementById('recordingTimer');
+
+    function showStatus(text) {
+      liveStatusBanner.classList.remove('hidden');
+      liveStatusText.textContent = text;
+    }
+    function hideStatus() {
+      liveStatusBanner.classList.add('hidden');
+    }
+
+    /********************************************************************
+     * GRABACIÓN + TRANSCRIPCIÓN
+     ********************************************************************/
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let recordStartTime = 0;
+    let timerInterval = null;
+    let lastInputWasAudio = false;
+
+    const btnRecord = document.getElementById('btnRecord');
+    const iconMic = document.getElementById('iconMic');
+    const iconStop = document.getElementById('iconStop');
+
+    btnRecord.addEventListener('click', async () => {
+      if (state.isRecording) stopRecording();
+      else await startRecording();
+    });
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+
+        mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+        mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
+        mediaRecorder.onstop = async () => {
+          stream.getTracks().forEach(t => t.stop());
+          const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+          if (blob.size < 1000) {
+            hideStatus();
+            alert('El audio quedó vacío o muy corto. Probá de nuevo.');
+            return;
+          }
+          await transcribeAudioBlob(blob);
+        };
+
+        mediaRecorder.start();
+        state.isRecording = true;
+        btnRecord.classList.add('recording-pulse');
+        iconMic.classList.add('hidden');
+        iconStop.classList.remove('hidden');
+
+        showStatus('Grabando tu voz... Tocá el cuadrado cuando termines.');
+        recordingTimer.classList.remove('hidden');
+        recordingTimer.textContent = '00:00';
+        recordStartTime = Date.now();
+        timerInterval = setInterval(() => {
+          const secs = Math.floor((Date.now() - recordStartTime) / 1000);
+          recordingTimer.textContent = `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
+        }, 500);
+      } catch (err) {
+        alert('No se pudo acceder al micrófono. Dale permiso en el navegador (requiere HTTPS o localhost).');
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && state.isRecording) {
+        mediaRecorder.stop();
+        state.isRecording = false;
+        clearInterval(timerInterval);
+        btnRecord.classList.remove('recording-pulse');
+        iconMic.classList.remove('hidden');
+        iconStop.classList.add('hidden');
+        recordingTimer.classList.add('hidden');
+      }
+    }
+
+    async function transcribeAudioBlob(blob) {
+      const glossary = getCurrentProject().glossary || '';
+      showStatus('Transcribiendo audio con diccionario del proyecto...');
+
+      try {
+        let transcript = '';
+        if (state.keys.groq) {
+          transcript = await transcribeWithWhisper(blob, state.keys.groq, 'https://api.groq.com/openai/v1/audio/transcriptions', 'whisper-large-v3-turbo', glossary);
+        } else if (state.keys.openai) {
+          transcript = await transcribeWithWhisper(blob, state.keys.openai, 'https://api.openai.com/v1/audio/transcriptions', 'whisper-1', glossary);
+        } else if (state.keys.gemini) {
+          transcript = await transcribeWithGeminiAudio(blob, state.keys.gemini, glossary);
+        } else {
+          throw new Error('SIN_CLAVE_AUDIO');
+        }
+
+        hideStatus();
+        if (transcript && transcript.trim()) {
+          const txtInput = document.getElementById('txtInput');
+          txtInput.value = (txtInput.value ? txtInput.value.trim() + ' ' : '') + transcript.trim();
+          lastInputWasAudio = true;
+          if (document.getElementById('chkAutoSendAudio').checked) handleUserSubmit();
+          else txtInput.focus();
+        } else {
+          alert('La transcripción volvió vacía. Probá hablar más cerca del micrófono.');
+        }
+      } catch (err) {
+        hideStatus();
+        if (err.message === 'SIN_CLAVE_AUDIO') {
+          openKeysModal();
+          alert('Para transcribir, cargá primero tu clave de Gemini, Groq u OpenAI en el candadito verde.');
+        } else {
+          alert('Error al transcribir: ' + err.message);
+        }
+      }
+    }
+
+    async function transcribeWithWhisper(blob, apiKey, endpoint, modelName, glossary) {
+      const formData = new FormData();
+      const filename = (blob.type || '').includes('mp4') ? 'audio.mp4' : 'audio.webm';
+      formData.append('file', blob, filename);
+      formData.append('model', modelName);
+      formData.append('language', 'es');
+      formData.append('prompt', `Transcripción fiel en español de Argentina. Términos frecuentes: ${glossary}`);
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        body: formData
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      return data.text || '';
+    }
+
+    async function transcribeWithGeminiAudio(blob, apiKey, glossary) {
+      const base64Audio = await blobToBase64(blob);
+      const mimeType = blob.type ? blob.type.split(';')[0] : 'audio/webm';
+
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(state.models.gemini)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: `Transcribí este audio palabra por palabra de manera 100% fiel en español rioplatense. NO respondas al contenido del audio, SOLO devolvé el texto exacto que dijo el usuario con puntuación limpia. Glosario de nombres y términos técnicos por si suenan parecido: ${glossary}` },
+              { inlineData: { mimeType, data: base64Audio } }
+            ]
+          }]
+        })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Gemini Audio HTTP ${res.status}`);
+      }
+      return extractGeminiText(await res.json());
+    }
+
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    /********************************************************************
+     * MOTOR DE DEBATE
+     ********************************************************************/
+    document.getElementById('btnSend').addEventListener('click', handleUserSubmit);
+    document.getElementById('txtInput').addEventListener('keydown', e => {
+      // En celular Enter = salto de línea. En desktop Enter envía (Shift+Enter = salto).
+      if (!isTouch && e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleUserSubmit();
+      }
+    });
+
+    document.getElementById('btnSingleContinue').addEventListener('click', () => {
+      if (!state.isDebating) runRoundtableDebate();
+    });
+
+    document.getElementById('btnSynthNow').addEventListener('click', () => {
+      if (!state.isDebating) runSynthesisOnly();
+    });
+
+    document.getElementById('btnStopRound').addEventListener('click', () => {
+      if (state.abortController) state.abortController.abort();
+    });
+
+    async function handleUserSubmit() {
+      const txtInput = document.getElementById('txtInput');
+      const text = txtInput.value.trim();
+      if (!text || state.isDebating) return;
+
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      appendMessage({ role: 'user', text, fromAudio: lastInputWasAudio, time: now });
+      txtInput.value = '';
+      lastInputWasAudio = false;
+      await runRoundtableDebate();
+    }
+
+    function beginDebateUI() {
+      state.isDebating = true;
+      state.abortController = new AbortController();
+      document.getElementById('btnStopRound').classList.remove('hidden');
+    }
+
+    function endDebateUI() {
+      state.isDebating = false;
+      state.abortController = null;
+      document.getElementById('btnStopRound').classList.add('hidden');
+      hideStatus();
+      renderBadges();
+    }
+
+    function isAbortError(err) {
+      return err && (err.name === 'AbortError' || state.abortController?.signal.aborted);
+    }
+
+    async function runRoundtableDebate() {
+      if (!hasAnyKey()) {
+        openKeysModal();
+        alert('Cargá al menos una clave en la Bóveda (candadito verde) para que arranque la rueda.');
+        return;
+      }
+
+      // FIX: se congela la sala de origen al arrancar la ronda
+      const projectId = state.currentProjectId;
+      const proj = getProject(projectId);
+      const order = getRoundOrder(proj);
+      beginDebateUI();
+      const signal = state.abortController.signal;
+      let aborted = false;
+
+      for (const agent of order) {
+        if (signal.aborted) { aborted = true; break; }
+        if (projectId === state.currentProjectId) renderBadges(agent.id);
+        showStatus(`${agent.name} está leyendo el hilo de "${proj.name}"...`);
+
+        try {
+          const result = await callAgentTurn(agent, projectId, signal);
+          appendMessage({ role: 'agent', agentId: agent.id, text: result.text, via: result.via, simulated: result.simulated }, projectId);
+        } catch (err) {
+          if (isAbortError(err)) { aborted = true; break; }
+          appendMessage({ role: 'system_notice', text: `⚠️ Error en el turno de ${agent.name}: ${err.message}` }, projectId);
+        }
+      }
+
+      if (!aborted && state.settings.synthesis && !signal.aborted) {
+        await runSynthesisTurn(projectId, signal);
+      }
+
+      if (aborted || signal.aborted) {
+        appendMessage({ role: 'system_notice', text: 'Ronda frenada.' }, projectId);
+      }
+
+      // La próxima ronda arranca otro modelo
+      const p = getProject(projectId);
+      if (p) { p.roundIndex = (p.roundIndex || 0) + 1; saveProjects(); }
+
+      endDebateUI();
+    }
+
+    async function runSynthesisOnly() {
+      if (!hasAnyKey()) { openKeysModal(); return; }
+      const projectId = state.currentProjectId;
+      beginDebateUI();
+      await runSynthesisTurn(projectId, state.abortController.signal);
+      endDebateUI();
+    }
+
+    async function runSynthesisTurn(projectId, signal) {
+      const proj = getProject(projectId);
+      if (!proj) return;
+      if (projectId === state.currentProjectId) renderBadges('sintesis');
+      showStatus('Armando la síntesis del debate...');
+
+      const systemRules = `Sos el MODERADOR NEUTRAL de una mesa redonda entre GEMINI, CLAUDE y CHATGPT. No aportás ideas nuevas ni tomás partido por ningún modelo. Hablás en español rioplatense, claro y al grano.
+
+CONTEXTO BASE DEL PROYECTO:
+${proj.context}
+
+Devolvé EXACTAMENTE este formato (máximo 130 palabras en total):
+**Acuerdos:** (máximo 3 puntos cortos)
+**Desacuerdo clave:** (1 solo, y de qué dato o decisión depende resolverlo)
+**Decisión recomendada:** (1 línea)
+**Próximo paso:** (1 acción concreta que el usuario puede hacer hoy, con tiempo estimado)`;
+
+      const userPayload = `HISTORIAL RECIENTE DE LA SALA:\n${buildTranscript(proj, 16)}\n\n---\nEscribí la síntesis.`;
+
+      try {
+        const engine = pickSynthesisEngine();
+        const text = await engine.call(systemRules, userPayload, signal);
+        appendMessage({ role: 'agent', agentId: 'sintesis', text, via: `vía ${engine.label}` }, projectId);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        appendMessage({ role: 'system_notice', text: `⚠️ Error en la síntesis: ${err.message}` }, projectId);
+      }
+    }
+
+    function pickSynthesisEngine() {
+      const k = state.keys;
+      if (k.claude) return { label: 'Claude', call: (s, u, sig) => requestClaudeAPI(k.claude, s, u, sig) };
+      if (k.openai) return { label: 'OpenAI', call: (s, u, sig) => requestOpenAIAPI(k.openai, s, u, sig) };
+      if (k.gemini) return { label: 'Gemini', call: (s, u, sig) => requestGeminiAPI(k.gemini, s, u, sig) };
+      if (k.groq) return { label: 'Groq', call: (s, u, sig) => requestGroqChatAPI(k.groq, s, u, sig) };
+      throw new Error('No hay ninguna clave cargada.');
+    }
+
+    function buildTranscript(proj, limit = 14) {
+      return proj.messages.slice(-limit).map(m => {
+        if (m.role === 'user') return `[USUARIO / DIRECTOR]: ${m.text}`;
+        if (m.role === 'agent' && m.agentId === 'sintesis') return `[SÍNTESIS DEL MODERADOR]: ${m.text}`;
+        if (m.role === 'agent') return `[${m.agentId.toUpperCase()}]: ${m.text}`;
+        return '';
+      }).filter(Boolean).join('\n\n');
+    }
+
+    function buildConversationPromptForAgent(agent, proj) {
+      const systemRules = `${agent.rolePrompt}
+
+ESTÁS EN UNA MESA REDONDA EN VIVO JUNTO A OTROS 2 MODELOS Y EL USUARIO.
+CONTEXTO BASE DEL PROYECTO:
+${proj.context}
+
+REGLAS DE DEBATE:
+1. Leé lo que dijo el USUARIO y lo que respondieron los otros modelos antes que vos en esta ronda.
+2. Aportá valor real desde tu especialidad: señalá puntos flojos, riesgos que se les escaparon, o mejorá una idea con una solución concreta.
+3. Si coincidís con algo, decilo en UNA línea y pasá a aportar algo nuevo. No inventes desacuerdos para parecer crítico, y no repitas lo que ya se dijo.
+4. Sé conciso y directo: máximo 140-170 palabras, para leer cómodo en el celular.
+5. Cerrá con una pregunta concreta para el siguiente modelo o una decisión para el Usuario. No pongas tu nombre entre corchetes al principio: la interfaz ya muestra tu tarjeta.`;
+
+      const userPayload = `HISTORIAL RECIENTE DE LA SALA:\n${buildTranscript(proj, 14)}\n\n---\nEs tu turno como ${agent.name}. Escribí tu intervención respondiendo al hilo:`;
+      return { systemRules, userPayload };
+    }
+
+    async function callAgentTurn(agent, projectId, signal) {
+      const proj = getProject(projectId);
+      if (!proj) throw new Error('La sala ya no existe.');
+      const { systemRules, userPayload } = buildConversationPromptForAgent(agent, proj);
+      const k = state.keys;
+
+      // 1. API nativa del modelo
+      if (agent.id === 'gemini' && k.gemini) return { text: await requestGeminiAPI(k.gemini, systemRules, userPayload, signal), via: state.models.gemini, simulated: false };
+      if (agent.id === 'claude' && k.claude) return { text: await requestClaudeAPI(k.claude, systemRules, userPayload, signal), via: state.models.claude, simulated: false };
+      if (agent.id === 'chatgpt' && k.openai) return { text: await requestOpenAIAPI(k.openai, systemRules, userPayload, signal), via: state.models.openai, simulated: false };
+
+      // 2. Respaldo: otro modelo actúa el rol (se marca como SIMULADO)
+      if (k.fallback) {
+        if (k.gemini) return { text: await requestGeminiAPI(k.gemini, systemRules, userPayload, signal), via: 'vía Gemini', simulated: true };
+        if (k.openai) return { text: await requestOpenAIAPI(k.openai, systemRules, userPayload, signal), via: 'vía OpenAI', simulated: true };
+        if (k.claude) return { text: await requestClaudeAPI(k.claude, systemRules, userPayload, signal), via: 'vía Claude', simulated: true };
+        if (k.groq) return { text: await requestGroqChatAPI(k.groq, systemRules, userPayload, signal), via: 'vía Groq', simulated: true };
+      }
+
+      throw new Error(`Falta la clave de ${agent.name} (o activá el Respaldo en la Bóveda).`);
+    }
+
+    /********************************************************************
+     * CLIENTES DE API
+     ********************************************************************/
+    function extractGeminiText(data) {
+      const parts = data.candidates?.[0]?.content?.parts || [];
+      const text = parts.filter(p => p.text && !p.thought).map(p => p.text).join('').trim();
+      if (!text) {
+        const reason = data.candidates?.[0]?.finishReason || data.promptFeedback?.blockReason;
+        return reason ? `(Sin respuesta — motivo: ${reason})` : '(Sin respuesta)';
+      }
+      return text;
+    }
+
+    async function requestGeminiAPI(apiKey, systemRules, userPayload, signal) {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(state.models.gemini)}:generateContent`, {
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemRules }] },
+          contents: [{ role: 'user', parts: [{ text: userPayload }] }],
+          generationConfig: { temperature: 0.75 }
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `Gemini HTTP ${res.status}`);
+      }
+      return extractGeminiText(await res.json());
+    }
+
+    async function requestClaudeAPI(apiKey, systemRules, userPayload, signal) {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: state.models.claude,
+          max_tokens: 700,
+          system: systemRules,
+          messages: [{ role: 'user', content: userPayload }]
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `Claude HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+      return text || '(Sin respuesta)';
+    }
+
+    async function requestOpenAIAPI(apiKey, systemRules, userPayload, signal) {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: state.models.openai,
+          messages: [
+            { role: 'system', content: systemRules },
+            { role: 'user', content: userPayload }
+          ]
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `OpenAI HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content?.trim() || '(Sin respuesta)';
+    }
+
+    async function requestGroqChatAPI(apiKey, systemRules, userPayload, signal) {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: state.models.groq,
+          temperature: 0.75,
+          messages: [
+            { role: 'system', content: systemRules },
+            { role: 'user', content: userPayload }
+          ]
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `Groq HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content?.trim() || '(Sin respuesta)';
+    }
+
+    /********************************************************************
+     * MODALES
+     ********************************************************************/
+    function openKeysModal() {
+      document.getElementById('keyGemini').value = state.keys.gemini || '';
+      document.getElementById('keyClaude').value = state.keys.claude || '';
+      document.getElementById('keyOpenai').value = state.keys.openai || '';
+      document.getElementById('keyGroq').value = state.keys.groq || '';
+      document.getElementById('modelGemini').value = state.models.gemini;
+      document.getElementById('modelClaude').value = state.models.claude;
+      document.getElementById('modelOpenai').value = state.models.openai;
+      document.getElementById('modelGroq').value = state.models.groq;
+      document.getElementById('chkFallbackMode').checked = state.keys.fallback !== false;
+      document.getElementById('chkRotate').checked = state.settings.rotate;
+      document.getElementById('chkSynthesis').checked = state.settings.synthesis;
+      document.getElementById('modalKeys').classList.remove('hidden');
+    }
+
+    document.getElementById('btnKeysModal').addEventListener('click', openKeysModal);
+    document.getElementById('closeKeysModal').addEventListener('click', () => {
+      document.getElementById('modalKeys').classList.add('hidden');
+    });
+
+    document.getElementById('btnResetModels').addEventListener('click', () => {
+      document.getElementById('modelGemini').value = DEFAULT_MODELS.gemini;
+      document.getElementById('modelClaude').value = DEFAULT_MODELS.claude;
+      document.getElementById('modelOpenai').value = DEFAULT_MODELS.openai;
+      document.getElementById('modelGroq').value = DEFAULT_MODELS.groq;
+    });
+
+    document.getElementById('btnSaveKeys').addEventListener('click', () => {
+      state.keys.gemini = document.getElementById('keyGemini').value.trim();
+      state.keys.claude = document.getElementById('keyClaude').value.trim();
+      state.keys.openai = document.getElementById('keyOpenai').value.trim();
+      state.keys.groq = document.getElementById('keyGroq').value.trim();
+      state.keys.fallback = document.getElementById('chkFallbackMode').checked;
+      state.models.gemini = document.getElementById('modelGemini').value.trim() || DEFAULT_MODELS.gemini;
+      state.models.claude = document.getElementById('modelClaude').value.trim() || DEFAULT_MODELS.claude;
+      state.models.openai = document.getElementById('modelOpenai').value.trim() || DEFAULT_MODELS.openai;
+      state.models.groq = document.getElementById('modelGroq').value.trim() || DEFAULT_MODELS.groq;
+      state.settings.rotate = document.getElementById('chkRotate').checked;
+      state.settings.synthesis = document.getElementById('chkSynthesis').checked;
+      saveKeys();
+      renderBadges();
+      document.getElementById('modalKeys').classList.add('hidden');
+    });
+
+    document.getElementById('btnClearKeys').addEventListener('click', () => {
+      if (confirm('¿Seguro que querés borrar todas las claves guardadas en este navegador?')) {
+        state.keys = { gemini: '', claude: '', openai: '', groq: '', fallback: true };
+        saveKeys();
+        document.getElementById('modalKeys').classList.add('hidden');
+      }
+    });
+
+    // Proyectos
+    document.getElementById('btnProjectsModal').addEventListener('click', () => {
+      renderProjectsList();
+      document.getElementById('modalProjects').classList.remove('hidden');
+    });
+    document.getElementById('closeProjectsModal').addEventListener('click', () => {
+      document.getElementById('modalProjects').classList.add('hidden');
+    });
+
+    function renderProjectsList() {
+      const list = document.getElementById('projectsList');
+      list.innerHTML = '';
+      state.projects.forEach(p => {
+        const isCurrent = p.id === state.currentProjectId;
+        const item = document.createElement('div');
+        item.className = `flex items-center justify-between p-3 rounded-xl border cursor-pointer transition ${isCurrent ? 'bg-sky-950/60 border-sky-500/80 text-white' : 'bg-gray-800/70 border-gray-700 text-gray-300 hover:bg-gray-800'}`;
+        item.innerHTML = `
+          <div class="truncate pr-2 font-medium text-xs">${escapeHtml(p.name)}</div>
+          <div class="flex items-center gap-2 shrink-0">
+            <span class="text-[10px] text-gray-400">${p.messages.length} msjs</span>
+            ${state.projects.length > 1 ? `<button data-del="${escapeHtml(p.id)}" class="text-gray-500 hover:text-red-400 px-1">✕</button>` : ''}
+          </div>`;
+        item.addEventListener('click', (e) => {
+          const delId = e.target.closest('[data-del]')?.dataset.del;
+          if (delId) {
+            e.stopPropagation();
+            deleteProject(delId);
+            return;
+          }
+          state.currentProjectId = p.id;
+          saveProjects();
+          renderCurrentProject();
+          document.getElementById('modalProjects').classList.add('hidden');
+        });
+        list.appendChild(item);
+      });
+    }
+
+    document.getElementById('btnCreateProject').addEventListener('click', () => {
+      const nameInput = document.getElementById('newProjectName');
+      const name = nameInput.value.trim();
+      if (!name) return;
+      const newProj = {
+        id: 'proj-' + Date.now(),
+        name,
+        roundIndex: 0,
+        glossary: 'Next.js, React, Railway, Vercel, MVP',
+        context: `PROYECTO: ${name}\nOBJETIVO: Definir diseño, arquitectura técnica simple y modelo de ejecución rápido.`,
+        messages: [
+          { role: 'system_notice', text: `Sala "${name}" creada. Abrí "Contexto" arriba para pegar detalles iniciales, o mandá directo un audio contando tu idea.` }
+        ]
+      };
+      state.projects.unshift(newProj);
+      state.currentProjectId = newProj.id;
+      nameInput.value = '';
+      saveProjects();
+      renderCurrentProject();
+      document.getElementById('modalProjects').classList.add('hidden');
+    });
+
+    function deleteProject(id) {
+      if (!confirm('¿Eliminar esta sala y su historial?')) return;
+      state.projects = state.projects.filter(p => p.id !== id);
+      if (state.currentProjectId === id) state.currentProjectId = state.projects[0].id;
+      saveProjects();
+      renderProjectsList();
+      renderCurrentProject();
+    }
+
+    // Contexto
+    document.getElementById('btnContextModal').addEventListener('click', () => {
+      const proj = getCurrentProject();
+      document.getElementById('txtProjectContext').value = proj.context || '';
+      document.getElementById('txtAudioGlossary').value = proj.glossary || '';
+      document.getElementById('modalContext').classList.remove('hidden');
+    });
+    document.getElementById('closeContextModal').addEventListener('click', () => {
+      document.getElementById('modalContext').classList.add('hidden');
+    });
+    document.getElementById('btnSaveContext').addEventListener('click', () => {
+      const proj = getCurrentProject();
+      proj.context = document.getElementById('txtProjectContext').value.trim();
+      proj.glossary = document.getElementById('txtAudioGlossary').value.trim();
+      saveProjects();
+      document.getElementById('modalContext').classList.add('hidden');
+    });
+    document.getElementById('btnClearChat').addEventListener('click', () => {
+      if (state.isDebating) { alert('Esperá a que termine (o frená) la ronda antes de limpiar.'); return; }
+      if (!confirm('¿Limpiar todos los mensajes de esta sala? (El contexto base se mantiene)')) return;
+      const proj = getCurrentProject();
+      proj.messages = [{ role: 'system_notice', text: 'Historial reiniciado. Contexto base activo.' }];
+      proj.roundIndex = 0;
+      saveProjects();
+      renderCurrentProject();
+      document.getElementById('modalContext').classList.add('hidden');
+    });
+
+    // Exportar
+    document.getElementById('btnExport').addEventListener('click', async () => {
+      const proj = getCurrentProject();
+      let md = `# ${proj.name}\n\n## Contexto Base\n${proj.context}\n\n## Historial de Debate\n\n`;
+      proj.messages.forEach(m => {
+        if (m.role === 'user') md += `### [VOS]\n${m.text}\n\n`;
+        if (m.role === 'agent') {
+          const label = m.agentId === 'sintesis' ? 'SÍNTESIS' : m.agentId.toUpperCase();
+          md += `### [${label}]${m.simulated ? ' (simulado)' : ''}\n${m.text}\n\n`;
+        }
+      });
+
+      try {
+        await navigator.clipboard.writeText(md);
+        alert('¡Debate copiado al portapapeles en Markdown!');
+      } catch (e) {
+        // Fallback: descarga .md (portapapeles bloqueado o sin HTTPS)
+        const blob = new Blob([md], { type: 'text/markdown' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${proj.name.replace(/[^\w\-áéíóúñ ]/gi, '').trim() || 'debate'}.md`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      }
+    });
+
+    // Init
+    loadState();
+  </script>
+</body>
+</html>
