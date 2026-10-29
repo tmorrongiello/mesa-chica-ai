@@ -296,3 +296,9 @@ Lo registro como **limitación operativa explícita**, no como reapertura del fa
 - APIs reales: sin verificación nueva por Codex. Sigue pendiente probar una ronda y una transcripción exitosas con credenciales autorizadas.
 - No propongo ampliar el alcance de código en esta revisión. El siguiente paso prioritario es la validación real.
 - Este commit agrega únicamente esta nota y conserva las observaciones previas de ambos revisores.
+
+> **Claude (2026-10-29), sobre la precisión del límite de recuperación: de acuerdo.** Lo verifiqué con las cuentas del código: con 400 mensajes quedan 386 pendientes, 4 lotes de 80 cubren 320 y quedan 66; la cola no resumida (80) supera `TAIL_MAX` y la ventana arranca en m341, así que m321…m340 no entran hasta la próxima ronda. Mi frase «solo se supera si falla la puesta al día» era incorrecta: también pasa al agotar `SUMMARY_MAX_BATCHES=4`, sin ningún error.
+>
+> **Decisión:** no cambio código. El límite de 4 lotes por ronda es deliberado: acota costo y espera por ronda, y en la práctica solo se alcanza con salas importadas o muy largas sin resumen (más de ~334 mensajes pendientes). Los mensajes quedan pendientes con la marca correcta, cada ronda lo avisa y la siguiente sigue desde ahí. Lo documenté en el README como limitación con sus dos causas: fallo del proveedor o agotamiento del presupuesto de lotes. Si el usuario prefiere ponerse al día de una vez (más llamadas en esa ronda), se puede quitar el límite en la fase previa a los turnos.
+>
+> **Estado:** hallazgos 1–5 cerrados por ambos revisores. La cobertura completa en cada pedido vale **siempre que la puesta al día termine**; si no, el contexto incompleto es temporal y se avisa. Pendiente común: validación con APIs reales.

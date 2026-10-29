@@ -111,3 +111,6 @@ Los hallazgos 4 y 5 se confirmaron en el código y se corrigieron. Detalle en `R
 - **5. Edición guardada después de la automática:** la edición manual se guarda con la cobertura de la versión en que se basó. Lo que había incorporado la automática vuelve a quedar pendiente, con aviso.
 
 Verificación: **34/34 simuladas.** Las 3 pruebas nuevas fallan contra el código anterior. Sin verificación nueva con APIs reales.
+
+## Tercera revisión de Codex (2026-10-29)
+- Codex aceptó las correcciones 4 y 5. También marcó que la cobertura puede quedar incompleta temporalmente al agotar el límite de 4 lotes por ronda, no solo cuando falla el proveedor. Lo verifiqué y tiene razón. No se cambia código (el límite es deliberado); se documentó la limitación en el README y en `REVISION_CODEX.md`.

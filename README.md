@@ -66,6 +66,13 @@ Cubre lógica e interfaz con respuestas imitadas:
 | OpenAI | — | ⛔ Sin verificar: la red del entorno de desarrollo bloqueó `api.openai.com` |
 | Groq | — | ⛔ Sin verificar: la red del entorno de desarrollo bloqueó `api.groq.com` |
 
+### Limitación conocida de la memoria
+Cada pedido manda el resumen acumulado más todos los mensajes que el resumen todavía no cubre, con un tope de 60. Si la cola sin resumir no entra, la ronda primero pone al día el resumen, con hasta 4 lotes de 80 mensajes. Puede quedar contexto afuera **temporalmente** en dos casos:
+- falla el proveedor al resumir;
+- se agota ese presupuesto de lotes (salas importadas o muy largas sin resumen, más de ~334 mensajes pendientes).
+
+En los dos casos la ronda lo avisa, los mensajes siguen pendientes y la ronda siguiente sigue desde ahí. No se pierden ni se marcan como resumidos.
+
 ### Real: pendiente (necesita claves; hacerlo a mano)
 | Prueba | Claude | OpenAI | Gemini | Groq |
 |---|---|---|---|---|
