@@ -40,9 +40,9 @@ Nunca pongas claves reales en las pruebas ni en el repo.
 
 ## Estado de verificación
 
-### Simulado: 34/34 pruebas OK (`npm test`)
+### Simulado: 35/35 pruebas OK (`npm test`)
 Cubre lógica e interfaz con respuestas imitadas:
-- debate, rotación y síntesis;
+- debate, rotación y síntesis (incluido proveedor/modelo propio para la síntesis);
 - aislamiento de salas, frenar y respuestas tardías;
 - errores (401, 400/404, 429 con Retry-After, 5xx, vacía, bloqueada, truncada, red, timeout);
 - respaldo entre proveedores;

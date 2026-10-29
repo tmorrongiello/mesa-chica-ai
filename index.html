@@ -519,6 +519,21 @@
           <div class="field"><label for="mOpenai">OpenAI (Datos y lógica) — Responses API</label><input type="text" id="mOpenai" class="mono" spellcheck="false" autocapitalize="off"></div>
           <div class="field"><label for="mGemini">Gemini (Diseño y UX)</label><input type="text" id="mGemini" class="mono" spellcheck="false" autocapitalize="off"></div>
           <div class="field"><label for="mGroq">Groq (solo respaldo de chat)</label><input type="text" id="mGroq" class="mono" spellcheck="false" autocapitalize="off"></div>
+          <div class="field">
+            <label for="setSynthProvider">Proveedor de la síntesis</label>
+            <select id="setSynthProvider">
+              <option value="auto">Automático (el primero con clave: Claude → OpenAI → Gemini → Groq)</option>
+              <option value="claude">Claude</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+              <option value="groq">Groq</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="setSynthModel">Modelo de la síntesis</label>
+            <input type="text" id="setSynthModel" class="mono" spellcheck="false" autocapitalize="off" placeholder="vacío = el mismo del debate" aria-describedby="synthModelHint">
+            <p id="synthModelHint" class="hint">Solo se usa si elegís un proveedor (no en Automático). Copiá el ID exacto de la documentación de ese proveedor (por ejemplo, <code>claude-opus-5-5</code> para Claude). La síntesis es 1 llamada por ronda: un modelo más grande ahí encarece mucho menos que en los tres turnos. Si a ese proveedor le falta la clave o falla, el respaldo usa los modelos del debate.</p>
+          </div>
           <div class="field"><label for="setMaxTokens">Máximo de tokens de salida por turno</label><input type="number" id="setMaxTokens" min="256" max="16000" step="64"><p class="hint">Algunos modelos cuentan el razonamiento interno dentro de este límite; si ves respuestas TRUNCADAS, subilo.</p></div>
         </fieldset>
 
@@ -669,7 +684,9 @@
     maxRecS: 300,
     maxAudioMB: 24,
     autoSend: false,
-    rememberKeys: false
+    rememberKeys: false,
+    synthProvider: 'auto',
+    synthModel: ''
   });
 
   // Defaults de la v2 que ya no sirven: si el usuario los tenía guardados, pasan a los nuevos.
@@ -823,6 +840,8 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
     cfg.maxTokens = clampNum(raw.maxTokens, 256, 16000, cfg.maxTokens);
     cfg.maxRecS = clampNum(raw.maxRecS, 10, 1800, cfg.maxRecS);
     cfg.maxAudioMB = clampNum(raw.maxAudioMB, 1, 25, cfg.maxAudioMB);
+    if (['auto', ...PROVIDER_IDS].includes(raw.synthProvider)) cfg.synthProvider = raw.synthProvider;
+    cfg.synthModel = cleanModelId(raw.synthModel, '');
     return cfg;
   }
 
@@ -1328,7 +1347,8 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
             si una llamada falla        → solo sigue si cfg.fallbackOnError.
             nunca se repite un proveedor dentro del mismo turno.
   */
-  async function callWithFallback({ native, snap, system, user, signal, onAttempt, onWait }) {
+  // nativeModel: modelo propio para el proveedor nativo (p. ej., el de la síntesis); el respaldo usa los del debate.
+  async function callWithFallback({ native, nativeModel, snap, system, user, signal, onAttempt, onWait }) {
     const { keys, cfg } = snap;
     const chain = [native, ...FALLBACK_ORDER.filter(p => p !== native)];
     const tried = new Set();
@@ -1345,7 +1365,7 @@ REGLA DE NEGOCIO CLAVE DEL USUARIO: Priorizar productos digitales limpios, proto
       }
       if (p !== native && reason === 'error' && !cfg.fallbackOnError) break;
       tried.add(p);
-      const model = cfg.models[p];
+      const model = p === native && nativeModel ? nativeModel : cfg.models[p];
       if (onAttempt) onAttempt({ provider: p, model, emulated: p !== native });
       try {
         const r = await withRetries(
@@ -1913,7 +1933,11 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
         const label = step.synth ? 'Síntesis' : step.seat.role;
         op.activeSeat = step.seat.id;
         if (App.currentId === projectId) renderBadges();
-        const native = step.synth ? FALLBACK_ORDER.find(pr => snap.keys[pr]) : step.seat.provider;
+        const synthFixed = step.synth && snap.cfg.synthProvider !== 'auto';
+        const native = step.synth
+          ? (synthFixed ? snap.cfg.synthProvider : FALLBACK_ORDER.find(pr => snap.keys[pr]))
+          : step.seat.provider;
+        const nativeModel = synthFixed ? snap.cfg.synthModel : '';
         if (!native) {
           appendMessage(projectId, { role: 'system_notice', level: 'error', text: `⚠️ ${label}: no hay ninguna clave cargada.` });
           break;
@@ -1927,7 +1951,7 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
         setOpStatus(op, `${i + 1}/${steps.length} · ${label} pensando…`);
         try {
           const r = await callWithFallback({
-            native, snap, system, user, signal: op.ctrl.signal,
+            native, nativeModel, snap, system, user, signal: op.ctrl.signal,
             onAttempt: a => setOpStatus(op, `${i + 1}/${steps.length} · ${label}${a.emulated ? ` (emulado por ${PROVIDER_LABEL[a.provider]})` : ''} pensando…`),
             onWait: w => setOpStatus(op, `${label}: ${PROVIDER_LABEL[w.provider]} respondió ${w.error.status || w.error.kind}; reintento ${w.attempt}/${w.of} en ${Math.ceil(w.waitS)} s…`)
           });
@@ -2419,6 +2443,8 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     $('setMaxRec').value = c.maxRecS;
     $('setMaxMB').value = c.maxAudioMB;
     $('setAutoSend').checked = c.autoSend;
+    $('setSynthProvider').value = c.synthProvider;
+    $('setSynthModel').value = c.synthModel;
   }
 
   function saveSettings() {
@@ -2429,7 +2455,8 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
       fallbackMissing: $('setFbMissing').checked, fallbackOnError: $('setFbError').checked,
       retries: $('setRetries').value, timeoutDebateS: $('setTimeoutDebate').value, timeoutTxS: $('setTimeoutTx').value,
       maxTokens: $('setMaxTokens').value, maxRecS: $('setMaxRec').value, maxAudioMB: $('setMaxMB').value,
-      autoSend: $('setAutoSend').checked, rememberKeys: App.config.rememberKeys
+      autoSend: $('setAutoSend').checked, rememberKeys: App.config.rememberKeys,
+      synthProvider: $('setSynthProvider').value, synthModel: $('setSynthModel').value
     };
     for (const [p, id] of Object.entries(MODEL_FIELDS)) raw.models[p] = $(id).value;
     for (const [p, id] of Object.entries(TX_FIELDS)) raw.txModels[p] = $(id).value;

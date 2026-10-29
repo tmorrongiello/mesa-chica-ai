@@ -211,6 +211,68 @@ async function run() {
     await ctx.close();
   });
 
+
+  await test('síntesis con proveedor y modelo propios; Automático ignora el modelo; respaldo con modelos del debate', async () => {
+    // Gemini + modelo propio: la síntesis va a Gemini con ese modelo; los panelistas, con los suyos.
+    {
+      const { ctx, page, go } = await newPage({ cfg: { synthProvider: 'gemini', synthModel: 'gemini-4-argon-prueba' } });
+      const log = await go();
+      await send(page, 'idea');
+      await waitIdle(page);
+      const gem = log.filter(l => l.prov === 'gemini');
+      assert(gem.length === 2, 'Gemini: turno + síntesis');
+      assert(gem[0].url.includes('/models/gemini-3.8-flash:') && gem[1].url.includes('/models/gemini-4-argon-prueba:'), 'modelos: ' + gem.map(g => g.url.split('/models/')[1]).join(' | '));
+      assert(log.filter(l => l.prov === 'claude').length === 1, 'Claude solo en su turno');
+      const c = await cards(page);
+      assert(c[3].includes('Síntesis') && c[3].includes('Gemini · gemini-4-argon-prueba') && !c[3].includes('EMULADO'), 'tarjeta: ' + c[3]);
+      await ctx.close();
+    }
+    // Claude + Opus.
+    {
+      const { ctx, page, go } = await newPage({ cfg: { synthProvider: 'claude', synthModel: 'claude-opus-5-5' } });
+      const log = await go();
+      await send(page, 'idea');
+      await waitIdle(page);
+      const models = log.filter(l => l.prov === 'claude').map(l => JSON.parse(l.body).model);
+      assert(models.join() === 'claude-sonnet-5-5,claude-opus-5-5', 'turno con Sonnet, síntesis con Opus: ' + models);
+      await ctx.close();
+    }
+    // Automático: el modelo propio no se usa (podría no corresponder al proveedor elegido solo).
+    {
+      const { ctx, page, go } = await newPage({ cfg: { synthProvider: 'auto', synthModel: 'claude-opus-5-5' } });
+      const log = await go();
+      await send(page, 'idea');
+      await waitIdle(page);
+      assert(log.filter(l => l.prov === 'claude').every(l => JSON.parse(l.body).model === 'claude-sonnet-5-5'), 'en Automático no se usa el modelo propio');
+      await ctx.close();
+    }
+    // Proveedor elegido sin clave: respaldo con el modelo del debate del siguiente proveedor.
+    {
+      const { ctx, page, go } = await newPage({ keys: { claude: KEYS.claude, openai: KEYS.openai }, cfg: { synthProvider: 'gemini', synthModel: 'gemini-4-argon-prueba', synthesis: true } });
+      const log = await go();
+      await send(page, 'idea');
+      await waitIdle(page);
+      assert(!log.some(l => l.prov === 'gemini'), 'no llama a Gemini sin clave');
+      const last = log.filter(l => l.prov === 'claude').pop();
+      assert(JSON.parse(last.body).system.includes('MODERADOR NEUTRAL') && JSON.parse(last.body).model === 'claude-sonnet-5-5', 'síntesis por respaldo con el modelo del debate');
+      await ctx.close();
+    }
+    // Ajustes: guardar y recargar conserva los dos campos.
+    {
+      const { ctx, page, go } = await newPage({ keys: false });
+      await go();
+      await page.click('#btnSettings');
+      assert((await page.inputValue('#setSynthProvider')) === 'auto' && (await page.inputValue('#setSynthModel')) === '', 'defaults');
+      await page.selectOption('#setSynthProvider', 'claude');
+      await page.fill('#setSynthModel', '  claude-opus-5-5  ');
+      await page.click('#btnSaveSettings');
+      await page.reload();
+      const c = await page.evaluate(() => ({ p: App.config.synthProvider, m: App.config.synthModel }));
+      assert(c.p === 'claude' && c.m === 'claude-opus-5-5', 'persistido y limpio: ' + JSON.stringify(c));
+      await ctx.close();
+    }
+  });
+
   await test('síntesis apagada: el último panelista cierra con propuesta/desacuerdos/próximo paso', async () => {
     const { ctx, page, go } = await newPage({ cfg: { synthesis: false } });
     const log = await go();

@@ -114,3 +114,9 @@ Verificación: **34/34 simuladas.** Las 3 pruebas nuevas fallan contra el códig
 
 ## Tercera revisión de Codex (2026-10-29)
 - Codex aceptó las correcciones 4 y 5. También marcó que la cobertura puede quedar incompleta temporalmente al agotar el límite de 4 lotes por ronda, no solo cuando falla el proveedor. Lo verifiqué y tiene razón. No se cambia código (el límite es deliberado); se documentó la limitación en el README y en `REVISION_CODEX.md`.
+
+## v3.4 — sesión 2026-10-29: modelo aparte para la síntesis
+- En **Ajustes → Modelos de debate**: "Proveedor de la síntesis" (Automático por defecto, igual que antes) y "Modelo de la síntesis" (vacío = el mismo modelo del debate de ese proveedor). Así se puede usar un modelo más grande solo en la síntesis, que es 1 llamada por ronda.
+- El modelo propio se usa solo con un proveedor elegido; en Automático se ignora, porque no se sabe de antemano qué proveedor va a tocar. Si a ese proveedor le falta la clave o falla, el respaldo usa los modelos del debate.
+- El resumen acumulado sigue con el modelo del debate.
+- Verificación: 35/35 simuladas (prueba nueva para proveedor/modelo propios, Automático, respaldo y guardado). Sin llamadas reales.
