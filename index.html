@@ -264,7 +264,7 @@
 
     /* ---------- Toasts ---------- */
     .toasts {
-      position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(132px + var(--safe-b)); z-index: 60;
+      position: fixed; left: 50%; transform: translateX(-50%); top: calc(142px + env(safe-area-inset-top, 0px)); z-index: 60;
       display: flex; flex-direction: column; gap: 8px; width: min(30rem, calc(100vw - 24px)); pointer-events: none;
     }
     .toast {
@@ -341,9 +341,9 @@
     <p id="audioPanelTitle"><strong>Audio sin transcribir.</strong> <span id="audioPanelText"></span></p>
     <audio id="audioPreview" controls preload="metadata"></audio>
     <div class="row">
-      <button id="btnAudioRetry" class="btn sm warn" type="button">Reintentar transcripción</button>
-      <button id="btnAudioDownload" class="btn sm" type="button">Descargar audio</button>
-      <button id="btnAudioDiscard" class="btn sm danger" type="button">Descartar</button>
+      <button id="btnAudioRetry" class="btn sm warn" type="button" aria-label="Reintentar transcripción">Reintentar</button>
+      <button id="btnAudioDownload" class="btn sm" type="button" aria-label="Descargar audio">Descargar</button>
+      <button id="btnAudioDiscard" class="btn sm danger" type="button" aria-label="Descartar audio">Descartar</button>
     </div>
   </section>
 

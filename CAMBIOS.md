@@ -32,3 +32,35 @@ Archivo nuevo: `index.html` (reemplaza a `mesa-chica-ai.html`, que queda como re
 - Audio: estados inactivo/pidiendo permiso/grabando/transcribiendo, doble clic bloqueado, sesión propia por grabación, micrófono siempre liberado, límites de duración y tamaño, audio conservado si falla (reintentar/descargar/descartar), cancelar transcripción, envío automático apagado por defecto.
 - Diálogos con foco inicial, trampa de foco, Escape y devolución de foco. Toasts en vez de `alert`. Botón "Nuevos mensajes" si estás leyendo arriba.
 - Exportar Markdown (copiar con descarga de respaldo) y JSON sin claves; importar JSON validado con vista previa y Agregar/Reemplazar.
+
+### Ajustes después de probar
+- Toasts arriba (debajo de la barra de operación) para no tapar el panel de audio ni el botón "Frenar".
+- Botones del panel de audio más cortos (entran en una fila a 390 px; mantienen `aria-label` completo).
+
+### Verificación (proveedores SIMULADOS, sin llamadas reales)
+`node pruebas/simulado.js` — Playwright + Chromium, `page.route` para las 4 APIs y `--use-fake-device-for-media-stream` para el micrófono. 26/26 OK:
+- Carga limpia a 390 px (sin scroll horizontal, sin recursos externos, viewport sin bloqueo de zoom).
+- Ronda completa: orden, cada turno lee los anteriores, síntesis, rotación; clave de Gemini en header; header de Anthropic; cuerpo de Responses API; decisiones y "(a verificar)" en el prompt.
+- Síntesis apagada → el último cierra con propuesta/desacuerdos/próximo paso.
+- Cambio de sala durante debate y durante transcripción; borradores independientes.
+- No deja borrar/limpiar sala con operación activa.
+- Frenar + empezar otra; respuesta tardía ignorada; no arranca más turnos.
+- Doble clic / Enter repetido: un solo envío.
+- 401, 404, 500 (con reintento), 429 con Retry-After 1 s (espera) y 60 s (corta y avisa), vacía, bloqueada, truncada (Claude y OpenAI), red/CORS, timeout de 10 s.
+- Respaldo por clave faltante (EMULADO + proveedor/modelo real), apagado, y por fallo sin repetir proveedor.
+- Storage lleno (aviso persistente, sin repetir llamadas), bloqueado, JSON inválido, datos parcialmente dañados (copia + recuperación), dañados sin poder copiar (no pisa).
+- Migración de claves v1 (solo memoria, copia borrada, aviso) y de modelos/ajustes viejos.
+- Recordar claves on/off, Borrar claves.
+- Import con HTML malicioso (nada se ejecuta), Agregar con id repetido, Reemplazar con confirmación; export JSON/MD sin claves.
+- Teclado: Enter/Shift+Enter/IME, diálogos (foco inicial, trampa, Escape, devolución), todos los botones y campos con nombre; celular: Enter = salto, botón "Nuevos mensajes" sin forzar scroll.
+- Audio: grabar/transcribir (nombre de archivo y modelo correctos), micrófono liberado, permiso denegado, fallo → conservar/reintentar/descargar, cancelar, corte por duración, autoenvío y su bloqueo con ronda activa.
+
+### Limitaciones pendientes
+- **No se probó ninguna llamada real.** IDs de modelo según la verificación del usuario (29/10/2026). Si algo falla en la prueba real, revisar contra la doc oficial.
+- `gemini-3.5-transcribe` queda como opción editable sin verificar su API.
+- No verificado en vivo: que OpenAI Responses y Groq acepten CORS desde el navegador, y que Gemini acepte audio `webm`/`mp4` inline.
+- `Retry-After` solo se puede leer si el proveedor lo expone por CORS; de Gemini se lee `RetryInfo` del cuerpo.
+- El corte por tamaño de audio usa la misma lógica que el de duración pero no tiene prueba automática.
+- Solo se probó en Chromium; falta Safari iOS (graba `audio/mp4` → se manda como `.m4a`).
+- Una sola ronda a la vez en toda la app (podés grabar/transcribir en paralelo).
+- En GitHub Pages, todas las páginas de `tmorrongiello.github.io` comparten origen y `localStorage`.
