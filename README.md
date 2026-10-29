@@ -76,7 +76,7 @@ Cada pedido manda el resumen acumulado más todos los mensajes que el resumen to
 
 **Cuándo puede quedar contexto afuera, temporalmente:**
 - falla el proveedor al resumir;
-- después de la actualización previa siguen quedando más mensajes sin resumir de los que entran en 60. Con una sala sin resumen, eso pasa a partir de unos 376 mensajes al arrancar la ronda.
+- después de la actualización previa siguen quedando más mensajes sin resumir de los que entran en 60. Con una sala sin resumen y una ronda de 4 turnos, eso pasa a partir de 378 mensajes sin resumir al arrancar la ronda.
 
 En esos casos la app lo avisa y los mensajes conservan su estado pendiente para las actualizaciones siguientes. No se pierden ni se marcan como resumidos. Las respuestas que ya se dieron sin ese contexto no se rehacen.
 

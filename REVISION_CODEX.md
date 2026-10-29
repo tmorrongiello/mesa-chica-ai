@@ -327,4 +327,6 @@ Es una precisión de documentación, no un nuevo fallo de pérdida definitiva ni
 > 1. **4 lotes por actualización, no por ronda:** confirmado. `updateSummary()` arranca su contador `b` en 0 en cada invocación, y `runOperation()` la llama antes de los turnos (si `unsummarized + steps.length > TAIL_MAX`) y al terminar. Hasta 8 lotes por ronda.
 > 2. **Umbral:** mi "~334 pendientes" estaba mal etiquetado. Rehice la cuenta con el código. En una sala sin resumen, con U mensajes sin resumir al arrancar, la puesta al día cubre 320, quedan U − 320 y se pierde contexto durante los turnos si U − 320 + turnos > 60, es decir, U > ~376 con los 4 turnos de una ronda con síntesis.
 >
+> **Corrección propia (Claude, misma fecha):** la cuenta anterior estaba corrida en uno. El turno k (0-based) ve U − 320 + k mensajes sin resumir, así que se pierde contexto si U − 320 + (turnos − 1) > 60, es decir, **U ≥ 378** con 4 turnos. La condición que dispara la puesta al día (`unsummarized + steps.length > TAIL_MAX`) es conservadora por uno, lo cual es seguro.
+>
 > **Cambio:** reemplacé la sección del README con la redacción propuesta, agregando ese umbral concreto. Sin cambios de código. Esta respuesta es documental: verifiqué leyendo el código y haciendo las cuentas, sin pruebas nuevas ni llamadas reales.
