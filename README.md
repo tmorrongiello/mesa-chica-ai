@@ -40,7 +40,7 @@ Nunca pongas claves reales en las pruebas ni en el repo.
 
 ## Estado de verificación
 
-### Simulado: 31/31 pruebas OK (`npm test`)
+### Simulado: 34/34 pruebas OK (`npm test`)
 Cubre lógica e interfaz con respuestas imitadas:
 - debate, rotación y síntesis;
 - aislamiento de salas, frenar y respuestas tardías;
@@ -52,7 +52,7 @@ Cubre lógica e interfaz con respuestas imitadas:
 - teclado, accesibilidad y celular;
 - audio;
 - conversación larga (objetivo + resumen acumulado);
-- memoria: en cada pedido no hay huecos entre resumen e historial (incluso si el resumen falla o se cancela), los resúmenes truncados se descartan y las ediciones manuales no se pisan.
+- memoria: en cada pedido no hay huecos entre resumen e historial (incluso si el resumen falla o se cancela), los resúmenes truncados se descartan, las ediciones manuales no se pisan, y las salas largas o importadas se resumen en lotes desde el más viejo sin saltear mensajes.
 
 **Estas pruebas no confirman** que los modelos, CORS ni los formatos de audio funcionen contra los proveedores reales.
 

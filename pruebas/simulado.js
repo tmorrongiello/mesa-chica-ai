@@ -67,11 +67,12 @@ async function mock(page, handlers = {}) {
    estén en el pedido, ya sea en el historial o dentro del resumen acumulado enviado.
    El resumidor simulado devuelve las marcas que recibió, así "resumir" conserva la información. */
 function memoryHarness({ failSummary = () => false, delaySummary = () => 0, truncSummary = () => false } = {}) {
-  const st = { produced: [], violations: [], summaries: 0, chatCalls: 0 };
+  const st = { produced: [], violations: [], summaries: 0, chatCalls: 0, summaryBodies: [] };
   const isSummary = e => e.body.includes('RESUMEN ACUMULADO de una mesa');
   const chat = prov => e => {
     if (isSummary(e)) {
       const k = st.summaries++;
+      st.summaryBodies.push(e.body);
       if (failSummary(k)) return { status: 500, body: { error: { message: 'falla simulada del resumen' } } };
       const marks = [...new Set(e.body.match(/\b[UA]-[A-Za-z0-9]+\b/g) || [])];
       if (truncSummary(k)) return { body: { content: [{ type: 'text', text: 'RESUMEN CORTADO' }], stop_reason: 'max_tokens' } };
@@ -96,6 +97,27 @@ async function until(fn, ms = 15000) {
   const t0 = Date.now();
   while (!(await fn())) { if (Date.now() - t0 > ms) throw new Error('timeout esperando condición'); await new Promise(r => setTimeout(r, 40)); }
 }
+// Carga N mensajes "viejos" sin resumir (como una sala importada), cada uno con su marca.
+async function seedOld(page, h, n) {
+  const marks = await page.evaluate(n => {
+    const p = current();
+    p.messages = [{ id: 'aviso', role: 'system_notice', text: 'sala importada' }];
+    const marks = [];
+    for (let i = 0; i < n; i++) {
+      const mark = `${i % 2 ? 'A' : 'U'}-I${String(i).padStart(3, '0')}`;
+      marks.push(mark);
+      p.messages.push(i % 2
+        ? { id: 'imp-' + i, role: 'agent', agentId: 'claude', provider: 'claude', model: 'x', text: `respuesta vieja ${mark}` }
+        : { id: 'imp-' + i, role: 'user', text: `pedido viejo ${mark}` });
+    }
+    p.objective = 'objetivo fijo'; p.summary = ''; p.summaryUpto = '';
+    renderRoom();
+    return marks;
+  }, n);
+  h.st.produced.push(...marks);
+  return marks;
+}
+const pendingCount = page => page.evaluate(() => pendingForSummary(current()).length);
 const roomMem = page => page.evaluate(() => ({ summary: current().summary, upto: current().summaryUpto, rev: current().summaryRev || 0 }));
 
 /* ---------- Mini runner ---------- */
@@ -745,6 +767,94 @@ async function run() {
       assert(after.summary.startsWith('RESUMEN') && after.upto, `${variant}: resumen rearmado`);
       await ctx.close();
     }
+  });
+
+
+  await test('memoria [Codex 4]: lotes contiguos desde el más viejo, sin saltear mensajes (límites 60/61 y 80/81)', async () => {
+    // N viejos + 1 nuevo = no resumidos. 59→60 y 60→61 prueban TAIL_MAX; 93/94 dejan 80/81 pendientes de resumir (lotes).
+    for (const n of [59, 60, 93, 94, 100]) {
+      const h = memoryHarness();
+      const { ctx, page, go } = await newPage();
+      await go(h.handlers);
+      await seedOld(page, h, n);
+      await userTurn(page, h, 0);
+      await waitIdle(page, 30000);
+      assert(h.st.violations.length === 0, `n=${n}: ${h.st.violations.slice(0, 2).join(' | ')}`);
+      const mem = await roomMem(page);
+      assert(mem.summary.includes('U-I000'), `n=${n}: el resumen incluye el mensaje más viejo`);
+      assert((await pendingCount(page)) === 0, `n=${n}: no quedan pendientes`);
+      if (n >= 60) assert(h.st.summaryBodies[0].includes('U-I000'), `n=${n}: la puesta al día arranca por el más viejo`);
+      if (n >= 94) assert(h.st.summaries >= 2, `n=${n}: más de un lote`);
+      await ctx.close();
+    }
+  });
+
+  await test('memoria [Codex 4]: borrar el resumen y fallos repetidos se recuperan sin pérdida definitiva', async () => {
+    // Borrar: había resumen hasta el mensaje 86; al borrarlo se rearma desde el más viejo.
+    {
+      const h = memoryHarness();
+      const { ctx, page, go } = await newPage();
+      await go(h.handlers);
+      const marks = await seedOld(page, h, 100);
+      await page.evaluate(m => { const p = current(); p.summary = 'RESUMEN ' + m.slice(0, 87).join(' '); p.summaryUpto = 'imp-86'; }, marks);
+      await page.click('#btnContext');
+      await page.fill('#ctxSummary', '');
+      await page.click('#btnSaveContext');
+      assert((await roomMem(page)).upto === '', 'borrar reinicia la cobertura');
+      await userTurn(page, h, 0);
+      await waitIdle(page, 30000);
+      assert(h.st.violations.length === 0, 'borrar: ' + h.st.violations.slice(0, 2).join(' | '));
+      assert((await roomMem(page)).summary.includes('U-I000') && (await pendingCount(page)) === 0, 'borrar: resumen rearmado desde el más viejo');
+      await ctx.close();
+    }
+    // Fallos: el resumidor falla 3 veces (2 rondas con contexto incompleto y AVISADO); después se pone al día.
+    {
+      const h = memoryHarness({ failSummary: k => k < 3 });
+      const { ctx, page, go } = await newPage();
+      await go(h.handlers);
+      await seedOld(page, h, 100);
+      await userTurn(page, h, 0);
+      await waitIdle(page, 30000);
+      const n1 = (await notices(page)).join('\n');
+      assert(n1.includes('quedan afuera de este pedido') && n1.includes('No pude actualizar el resumen'), 'aviso explícito de contexto incompleto');
+      await userTurn(page, h, 1);
+      await waitIdle(page, 30000);
+      const before = h.st.violations.length;
+      await userTurn(page, h, 2);
+      await waitIdle(page, 30000);
+      assert(h.st.violations.length === before, 'tras recuperarse, sin huecos: ' + h.st.violations.slice(before).join(' | '));
+      const mem = await roomMem(page);
+      assert(mem.summary.includes('U-I000') && mem.summary.includes('A-I099') && (await pendingCount(page)) === 0, 'ningún mensaje quedó omitido definitivamente');
+      await ctx.close();
+    }
+  });
+
+  await test('memoria [Codex 5]: guardar una edición después de que llegó la automática no deja una marca incorrecta', async () => {
+    const h = memoryHarness({ delaySummary: k => (k === 1 ? 2000 : 0) });
+    const { ctx, page, go } = await newPage();
+    await go(h.handlers);
+    for (let i = 0; i < 3; i++) { await userTurn(page, h, i); await waitIdle(page); }
+    // Resumen A cubre solo el primer mensaje (m1); quedan m2…m6 pendientes.
+    const ids = await page.evaluate(() => { const c = current().messages.filter(m => m.role !== 'system_notice'); const p = current(); p.summary = 'RESUMEN-A U-00'; p.summaryUpto = c[0].id; p.summaryRev = 5; return { first: c[0].id, secondText: c[1].text }; });
+    const secondMark = ids.secondText.match(/[UA]-[A-Za-z0-9]+/)[0];
+    await userTurn(page, h, 3);
+    await until(() => h.st.summaries >= 2);                 // la automática está en vuelo
+    await page.click('#btnContext');
+    await page.fill('#ctxSummary', 'EDICION B U-00');        // edita A sin guardar todavía
+    await until(() => page.evaluate(f => current().summaryUpto !== f, ids.first)); // llega la automática y avanza la marca
+    await page.click('#btnSaveContext');                     // recién ahora guarda B
+    await waitIdle(page);
+    const mem = await roomMem(page);
+    assert(mem.summary === 'EDICION B U-00', 'se conserva B');
+    assert(mem.upto === ids.first, 'la marca vuelve a la cobertura de la versión editada: ' + mem.upto);
+    assert((await page.textContent('#toasts')).includes('vuelve a quedar pendiente'), 'aviso del conflicto');
+    assert(await page.evaluate(() => recentWindow(current().messages.filter(m => m.role !== 'system_notice'), current().summaryUpto).msgs.length > 14), 'm2…m6 vuelven a la cola pendiente');
+    await userTurn(page, h, 4);
+    await waitIdle(page);
+    assert(h.st.violations.length === 0, h.st.violations.join(' | '));
+    const next = h.st.summaryBodies[h.st.summaryBodies.length - 1];
+    assert(next.includes('EDICION B') && next.includes(secondMark), 'el siguiente resumen parte de B e incorpora m2…');
+    await ctx.close();
   });
 
   /* ----- Audio (Chromium con micrófono falso) ----- */

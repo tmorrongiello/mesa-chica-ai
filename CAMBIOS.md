@@ -103,3 +103,11 @@ Los tres hallazgos de la revisión se confirmaron en el código y se corrigieron
 3. **Edición manual concurrente:** revisión incremental del resumen (`summaryRev`); una respuesta tardía no pisa lo que editaste o borraste. Guardar Contexto sin tocar el resumen tampoco pisa una actualización automática.
 
 Verificación: **31/31 simuladas.** Las tres pruebas nuevas fallan contra el código anterior y pasan con el nuevo. Sin verificación nueva con APIs reales: no hay claves y la red de la sesión bloquea OpenAI/Groq.
+
+## v3.3 — sesión 2026-10-29 (segunda revisión de Codex)
+
+Los hallazgos 4 y 5 se confirmaron en el código y se corrigieron. Detalle en `REVISION_CODEX.md`.
+- **4. Lotes grandes:** el resumen se arma en orden, por lotes contiguos desde el mensaje más viejo, y la marca avanza solo por lo resumido. Si lo pendiente más la ronda no entra en un pedido (60 mensajes), primero se pone al día el resumen. Las pruebas de límites encontraron que había que contar también los turnos que suma la ronda.
+- **5. Edición guardada después de la automática:** la edición manual se guarda con la cobertura de la versión en que se basó. Lo que había incorporado la automática vuelve a quedar pendiente, con aviso.
+
+Verificación: **34/34 simuladas.** Las 3 pruebas nuevas fallan contra el código anterior. Sin verificación nueva con APIs reales.

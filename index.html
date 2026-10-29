@@ -1749,49 +1749,66 @@ No inventes decisiones: solo el usuario decide y sus decisiones se guardan apart
 
   const SUMMARY_MAX_BATCH = 80;
 
-  // Si hay mensajes que ya no entran en los últimos 14 y el resumen no cubre, se actualiza (una llamada extra).
-  async function updateSummary(op, projectId, snap) {
-    const p = getProject(projectId);
-    if (!p) return;
-    const conv = p.messages.filter(m => m.role === 'user' || m.role === 'agent');
+  const SUMMARY_MAX_BATCHES = 4; // lotes por actualización; si queda más, sigue en la próxima
+
+  const convOf = p => p.messages.filter(m => m.role === 'user' || m.role === 'agent');
+
+  // Pendientes de resumir: posteriores a summaryUpto, sin contar los últimos 14 (que viajan como historial).
+  function pendingForSummary(p) {
+    const conv = convOf(p);
     const outside = conv.slice(0, Math.max(0, conv.length - HISTORY_LIMIT));
-    if (!outside.length) return;
+    if (!outside.length) return [];
     const covered = p.summaryUpto ? outside.findIndex(m => m.id === p.summaryUpto) : -1;
-    if (p.summaryUpto && covered === -1 && conv.some(m => m.id === p.summaryUpto)) return; // ya cubre más de lo que salió
-    let fresh = outside.slice(covered + 1);
-    if (!fresh.length) return;
-    const skipped = Math.max(0, fresh.length - SUMMARY_MAX_BATCH);
-    fresh = fresh.slice(-SUMMARY_MAX_BATCH);
+    if (p.summaryUpto && covered === -1 && conv.some(m => m.id === p.summaryUpto)) return []; // ya cubre más de lo que salió
+    return outside.slice(covered + 1);
+  }
+
+  /* Resume los pendientes EN ORDEN, por lotes contiguos desde el más viejo. La marca summaryUpto avanza
+     solo hasta el último mensaje realmente incluido en un resumen completo: nunca saltea mensajes.
+     phase 'inicio' = puesta al día antes de los turnos. Devuelve true si quedó al día. */
+  async function updateSummary(op, projectId, snap, { phase = 'fin' } = {}) {
     const native = FALLBACK_ORDER.find(pr => snap.keys[pr]);
-    if (!native) return;
-    op.activeSeat = null;
-    if (App.currentId === projectId) renderBadges();
-    setOpStatus(op, 'Actualizando resumen acumulado…');
-    const startRev = p.summaryRev || 0; // para detectar ediciones manuales mientras espera al proveedor
-    const { system, user } = summaryPrompt(p.objective || '', p.summary || '', fresh);
-    try {
-      const r = await callWithFallback({ native, snap, system, user, signal: op.ctrl.signal });
-      if (!isLive(op)) return;
+    if (!native) return false;
+    for (let b = 0; b < SUMMARY_MAX_BATCHES; b++) {
+      const p = getProject(projectId);
+      if (!p) return false;
+      const pending = pendingForSummary(p);
+      if (!pending.length) return true;
+      const batch = pending.slice(0, SUMMARY_MAX_BATCH);
+      op.activeSeat = null;
+      if (App.currentId === projectId) renderBadges();
+      const lote = pending.length > SUMMARY_MAX_BATCH || b ? ` (lote ${b + 1})` : '';
+      setOpStatus(op, phase === 'inicio' ? `Poniendo al día el resumen antes de la ronda${lote}…` : `Actualizando resumen acumulado${lote}…`);
+      const startRev = p.summaryRev || 0; // para detectar ediciones manuales mientras espera al proveedor
+      const { system, user } = summaryPrompt(p.objective || '', p.summary || '', batch);
+      let r;
+      try {
+        r = await callWithFallback({ native, snap, system, user, signal: op.ctrl.signal });
+      } catch (e) {
+        if (!isLive(op) || (e instanceof ApiError && e.kind === 'cancelled')) return false;
+        appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `No pude actualizar el resumen acumulado (${describeFailure(e)}). Los mensajes pendientes siguen viajando completos y se reintenta en la próxima ronda.` });
+        return false;
+      }
+      if (!isLive(op)) return false;
       const target = getProject(projectId);
-      if (!target) return;
+      if (!target) return false;
       // Un resumen cortado no reemplaza al anterior ni marca mensajes como resumidos.
       if (r.truncated || r.text.length > LIMITS.summary) {
         appendMessage(projectId, { role: 'system_notice', level: 'warn', text: 'El resumen acumulado volvió TRUNCADO: conservé el anterior y los mensajes pendientes siguen viajando completos. Se reintenta en la próxima ronda; si se repite, subí el máximo de tokens en Ajustes.' });
-        return;
+        return false;
       }
       if ((target.summaryRev || 0) !== startRev) {
         appendMessage(projectId, { role: 'system_notice', level: 'warn', text: 'Editaste el resumen acumulado mientras se actualizaba: conservé tu versión y descarté la automática. Lo pendiente se incorpora en la próxima ronda.' });
-        return;
+        return false;
       }
       target.summary = r.text;
-      target.summaryUpto = fresh[fresh.length - 1].id;
+      target.summaryUpto = batch[batch.length - 1].id;
       target.summaryRev = startRev + 1;
       persistNow();
-      if (skipped) appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `El resumen acumulado arrancó con los últimos ${SUMMARY_MAX_BATCH} mensajes viejos; ${skipped} anteriores quedaron afuera.` });
-    } catch (e) {
-      if (!isLive(op) || (e instanceof ApiError && e.kind === 'cancelled')) return;
-      appendMessage(projectId, { role: 'system_notice', level: 'warn', text: `No pude actualizar el resumen acumulado (${describeFailure(e)}). Se reintenta en la próxima ronda.` });
     }
+    const left = pendingForSummary(getProject(projectId) || { messages: [] }).length;
+    if (left) appendMessage(projectId, { role: 'system_notice', level: 'info', text: `Quedan ${left} mensajes viejos por incorporar al resumen; sigo en la próxima ronda.` });
+    return !left;
   }
 
   function seatPrompt(seat, room, win, closeRound) {
@@ -1864,9 +1881,6 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
 
     // Foto de todo al arrancar: sala, contexto, decisiones, historial, claves y configuración.
     const snap = { keys: Keys.snapshot(), cfg: structuredClone(App.config) };
-    // El resumen y su marca de cobertura quedan fijos durante la ronda; el historial no resumido viaja completo.
-    const room = { objective: p.objective || '', context: p.context || '', decisions: p.decisions || '', summary: p.summary || '', summaryUpto: p.summaryUpto || '' };
-    const history = p.messages.filter(m => m.role === 'user' || m.role === 'agent').map(m => ({ ...m }));
     const order = kind === 'round' ? roundOrder(p, snap.cfg) : [];
     const synth = kind === 'synth' || snap.cfg.synthesis;
     if (kind === 'round') { p.roundIndex = (p.roundIndex || 0) + 1; persistNow(); }
@@ -1881,6 +1895,18 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     announce(kind === 'round' ? 'Arrancó la ronda' : 'Arrancó la síntesis');
 
     try {
+      // Si la cola no resumida, más lo que va a sumar esta ronda, no entra en un pedido (TAIL_MAX),
+      // primero se pone al día el resumen.
+      const conv0 = convOf(p);
+      const unsummarized = conv0.length - 1 - (p.summaryUpto ? conv0.findIndex(m => m.id === p.summaryUpto) : -1);
+      if (unsummarized + steps.length > TAIL_MAX) {
+        await updateSummary(op, projectId, snap, { phase: 'inicio' });
+        if (!isLive(op)) return;
+      }
+      const src = getProject(projectId) || p;
+      // El resumen y su marca de cobertura quedan fijos durante la ronda; el historial no resumido viaja completo.
+      const room = { objective: src.objective || '', context: src.context || '', decisions: src.decisions || '', summary: src.summary || '', summaryUpto: src.summaryUpto || '' };
+      const history = convOf(src).map(m => ({ ...m }));
       for (let i = 0; i < steps.length; i++) {
         if (!isLive(op)) break;
         const step = steps[i];
@@ -2273,6 +2299,8 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     $('ctxObjective').value = p.objective || '';
     $('ctxSummary').value = p.summary || '';
     d._summaryAtOpen = p.summary || '';
+    d._uptoAtOpen = p.summaryUpto || '';
+    d._revAtOpen = p.summaryRev || 0;
     $('ctxContext').value = p.context || '';
     $('ctxDecisions').value = p.decisions || '';
     $('ctxGlossary').value = p.glossary || '';
@@ -2290,9 +2318,14 @@ Devolvé EXACTAMENTE este formato (máximo 140 palabras):
     // que haya llegado mientras estaba abierto, y una edición tuya invalida la automática en curso.
     const newSummary = $('ctxSummary').value.slice(0, LIMITS.summary);
     if (newSummary !== d._summaryAtOpen) {
-      if (!newSummary.trim()) p.summaryUpto = ''; // borrado a mano: se rearma desde cero
+      // Tu edición parte del resumen que viste al abrir: su cobertura es la de ese momento. Si mientras tanto
+      // llegó una actualización automática, sus mensajes vuelven a quedar pendientes (no se asocia tu texto
+      // a la marca avanzada de otro resumen).
+      const staleBase = (p.summaryRev || 0) !== d._revAtOpen;
+      p.summaryUpto = !newSummary.trim() ? '' : d._uptoAtOpen; // borrado a mano: se rearma desde cero
       p.summary = newSummary;
       p.summaryRev = (p.summaryRev || 0) + 1;
+      if (staleBase) toast('Mientras editabas llegó una actualización automática del resumen. Conservé tu versión; lo que esa actualización había incorporado vuelve a quedar pendiente y se resume en la próxima ronda.', { level: 'warn', timeout: 10000 });
     }
     p.decisions = $('ctxDecisions').value.slice(0, LIMITS.decisions);
     p.glossary = $('ctxGlossary').value.trim().slice(0, LIMITS.glossary);
