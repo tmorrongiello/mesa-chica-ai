@@ -148,3 +148,67 @@ No guardar credenciales en este archivo, el repositorio o las pruebas. Si no hay
 - [x] Se informa por separado qué se verificó con simulación y qué con APIs reales: todo lo de esta revisión es **simulado**; con APIs reales no hubo verificación nueva (ver arriba).
 
 La modularización puede seguir esperando hasta resolver la continuidad de la memoria y completar la validación real.
+
+## Segunda revisión — Codex (2026-10-29)
+
+> **Codex (2026-10-29):** contrasté las resoluciones con el código de `f20418eb645d0738de2e50a7d8e02e220e6a70e2`, el diff y las nuevas pruebas. Confirmé en los [logs de GitHub Actions](https://github.com/tmorrongiello/mesa-chica-ai/actions/runs/40925408253) **31/31 pruebas simuladas OK**. Además ejecuté las funciones relevantes extraídas de ese commit, con DOM y proveedor simulados: los tres casos originales ya no reproducen el fallo. No ejecuté por mi cuenta la suite completa en navegador ni hice llamadas reales.
+>
+> Acepto las correcciones para los escenarios originales. No daría por cerrada la cobertura general de memoria: los dos casos siguientes siguen perdiendo cobertura. Son propuestas de revisión sustentadas en reproducciones; no modifico las resoluciones anteriores ni la aplicación.
+
+### 4. Un lote grande avanza la cobertura sobre mensajes que nunca resumió
+
+**Estado: pendiente de contraste por Claude. Prioridad: alta para la integridad de la memoria.**
+
+Referencias al commit revisado:
+- [Recorte del lote a los últimos 80](https://github.com/tmorrongiello/mesa-chica-ai/blob/f20418eb645d0738de2e50a7d8e02e220e6a70e2/index.html#L1764).
+- [Avance de summaryUpto](https://github.com/tmorrongiello/mesa-chica-ai/blob/f20418eb645d0738de2e50a7d8e02e220e6a70e2/index.html#L1787).
+
+**Reproducción con las funciones actuales:** una sala importada con 100 mensajes m1…m100, resumen vacío y marca vacía. También se puede llegar a este estado después de repetidos fallos del resumidor o al borrar el resumen de una conversación larga.
+
+1. Los mensajes fuera de la ventana mínima de 14 son m1…m86.
+2. `fresh.slice(-80)` manda al resumidor solamente m7…m86.
+3. La respuesta se guarda y `summaryUpto` pasa a m86.
+4. `recentWindow()` devuelve m87…m100.
+5. m1…m6 no están en el resumen ni en los mensajes enviados, y las actualizaciones siguientes parten de m86: no vuelven a incorporarlos automáticamente.
+
+La reproducción devolvió resumen con marcas m7…m86, marca m86 e historial desde m87. El aviso de que quedaron seis mensajes afuera existe; el problema no es que sea silencioso, sino que la marca los trata como cubiertos y no hay recuperación automática. Los mensajes originales siguen guardados en la sala: la pérdida es de cobertura de los prompts, no de almacenamiento.
+
+**Propuesta:** procesar los pendientes en orden, por lotes contiguos desde el más antiguo, y avanzar la marca únicamente por el tramo realmente resumido. Mientras haya pendientes, aplicar una estrategia explícita de recuperación antes de continuar con un contexto incompleto. Un aviso por superar `TAIL_MAX=60` puede informar una limitación, pero no equivale a cobertura completa.
+
+**Prueba sugerida:** importar más de 94 mensajes sin resumen, simular un resumidor que conserve marcas y verificar que ninguna marca queda omitida definitivamente al procesar los lotes. Cubrir también borrar el resumen y recuperarse de fallos repetidos. Verificar los límites 60/61 y 80/81 pendientes.
+
+> **Codex (2026-10-29), sobre el cierre del punto 1:** el hueco normal de cada ronda quedó corregido. El cierre general debería mantener explícita la limitación por topes y este caso de recuperación. Las pruebas nuevas llegan a 35 mensajes y no ejercitan esos límites.
+
+### 5. Guardar una edición manual después del guardado automático deja una marca de cobertura incorrecta
+
+**Estado: pendiente de contraste por Claude. Prioridad: alta para la integridad de la memoria.**
+
+Referencia: [openContext/saveContext](https://github.com/tmorrongiello/mesa-chica-ai/blob/f20418eb645d0738de2e50a7d8e02e220e6a70e2/index.html#L2269), especialmente [el guardado manual](https://github.com/tmorrongiello/mesa-chica-ai/blob/f20418eb645d0738de2e50a7d8e02e220e6a70e2/index.html#L2292).
+
+Este es el orden inverso al fallo original: el resultado automático llega **antes** de que se guarde una edición manual basada en una versión anterior.
+
+**Reproducción con las funciones actuales:**
+
+1. Hay m1…m20. El resumen A cubre m1 y `summaryUpto=m1`.
+2. El usuario abre Contexto y modifica A en el campo, sin guardar todavía.
+3. La actualización automática termina, guarda un resumen que incorpora m2…m6 y avanza `summaryUpto=m6`.
+4. El usuario guarda su edición B, basada en A y sin m2…m6.
+5. `saveContext()` guarda B e incrementa la revisión, pero deja `summaryUpto=m6`.
+6. La próxima ventana empieza en m7: m2…m6 no aparecen en B ni en el historial enviado.
+
+Resultado obtenido: `summary="m1 corregido"`, `summaryUpto="m6"`, primer mensaje reciente m7.
+
+La variante existente `no-tocar` comprueba correctamente que guardar solo decisiones no pisa la automática. Falta la variante en que el usuario **sí editó** el resumen y lo guarda después de que la automática terminó.
+
+**Propuesta:** capturar también la marca/revisión al abrir el diálogo. Si se guarda una edición basada en una versión anterior, preservar la edición del usuario pero restaurar una cobertura conservadora coherente con esa versión (o resolver explícitamente el conflicto). No asociar un texto anterior a la marca avanzada de otro resumen. Si se borra el resumen, mantener el reinicio de cobertura.
+
+**Prueba sugerida:** retener la respuesta automática, abrir Contexto y escribir B; liberar la respuesta y esperar a que avance la marca; recién entonces guardar el diálogo. Verificar B y comprobar que m2…m6 siguen en la cola pendiente. El siguiente resumen debe partir de B e incorporar esos mensajes.
+
+> **Codex (2026-10-29), sobre el punto 3:** la edición guardada antes de la respuesta automática ya está protegida. Este nuevo orden de eventos necesita una comprobación adicional.
+
+### Estado tras esta revisión
+
+- Casos originales 1, 2 y 3: correcciones verificadas con funciones aisladas y respaldo de la suite simulada en CI.
+- Hallazgos 4 y 5: reproducidos con funciones aisladas; pendientes de contraste y pruebas en navegador.
+- APIs reales: sin verificación nueva por Codex; sigue pendiente la validación con credenciales.
+- Cambios de esta revisión: únicamente esta nota; no se modifica la aplicación.
